@@ -35,7 +35,7 @@ if uploaded_files:
                 # Gereksiz çift boşlukları temizle
                 full_text = re.sub(r'\s+', ' ', full_text)
                 
-                # Kaynakçayı kes (Alıntı olmayan referans listesini taramamak için)
+                # Kaynakçayı kes
                 ref_keywords = ['Kaynakça', 'References', 'KAYNAKÇA', 'REFERENCES', 'Works Cited']
                 for kw in ref_keywords:
                     if kw in full_text:
@@ -44,10 +44,7 @@ if uploaded_files:
                 
                 # GÜÇLENDİRİLMİŞ APA DESENLERİ
                 patterns = {
-                    # (Yazar & Yazar, 2020) veya (Yazar, 2000; Yazar, 2010) gibi parantez içi yapıları yakalar
                     'APA_Parenthetical': r'\([A-ZÇĞİÖŞÜ][^)]+\d{4}[^)]*\)',
-                    
-                    # Yazar (2020) veya Yazar ve ark. (2020) gibi metin içi anlatı yapılarını yakalar
                     'APA_Narrative': r'[A-ZÇĞİÖŞÜ][a-zçğıöşü]{2,}[^()]{0,50}\(\d{4}\)'
                 }
                 
@@ -55,11 +52,36 @@ if uploaded_files:
                     found = re.findall(pattern, full_text)
                     
                     for item in found:
-                        # Temizlik: Fazla boşlukları al
                         item_clean = re.sub(r'\s+', ' ', item).strip()
                         
-                        # Filtreleme (Hatalı yakalamaları önlemek için)
                         if style == 'APA_Narrative' and (len(item_clean) > 80 or len(item_clean) < 5):
                             continue
                         
-                        # Yıl ve Yazar bilgisini ayık
+                        yil_match = re.search(r'\d{4}', item_clean)
+                        yil = yil_match.group() if yil_match else ""
+                        
+                        yazar = item_clean.split('(')[0].strip() if '(' in item_clean else item_clean
+                        yazar = yazar.strip('() ,;')
+
+                        all_data.append({
+                            "Dosya Adı": uploaded_file.name,
+                            "Yazar/Grup": yazar,
+                            "Yıl": yil,
+                            "Alıntı Tipi": style,
+                            "Tam Metin": item_clean
+                        })
+                doc.close()
+            except Exception as e:
+                st.error(f"{uploaded_file.name} işlenirken bir hata oluştu: {e}")
+
+    if all_data:
+        df = pd.DataFrame(all_data)
+        df = df.drop_duplicates()
+        
+        st.success(f"İşlem Tamamlandı! Toplam {len(df)} benzersiz alıntı bulundu.")
+        st.dataframe(df, use_container_width=True)
+        
+        output = io.BytesIO()
+        try:
+            with pd.ExcelWriter(output) as writer:
+                df.to_
