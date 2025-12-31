@@ -84,4 +84,24 @@ if uploaded_files:
         output = io.BytesIO()
         try:
             with pd.ExcelWriter(output) as writer:
-                df.to_
+                df.to_excel(writer, index=False, sheet_name='Alıntılar')
+            
+            st.download_button(
+                label="📊 Sonuçları Excel Olarak İndir",
+                data=output.getvalue(),
+                file_name="akademik_alintilar.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        except Exception as e:
+            st.error(f"Excel oluşturulamadı: {e}")
+    else:
+        st.info("Uygun alıntı bulunamadı.")
+
+st.divider()
+st.caption("Geliştirici: Bülent Dos | Akademik PDF Araştırma Aracı")
+🚀 Neden Syntax Error Aldın?
+Hata mesajındaki ^ işareti, Python'un kodun sonuna geldiğini ama kapatılmamış bir blok (muhtemelen try bloğu) olduğunu söylüyor. Kodu yapıştırırken son satırdaki st.caption... kısmına kadar her şeyi aldığından emin ol.
+
+Bunu yapıştırdıktan sonra Streamlit ekranındaki "Manage App -> Reboot" butonuna basmayı unutma.
+
+Şimdi o "Bransford, Brown, & Cocking" alıntılarını Excel'de görmeye hazır mısın?
