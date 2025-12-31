@@ -18,14 +18,12 @@ if uploaded_files:
     with st.spinner('Dosyalar analiz ediliyor...'):
         for uploaded_file in uploaded_files:
             try:
-                # PDF'i oku
                 file_content = uploaded_file.read()
                 doc = fitz.open(stream=file_content, filetype="pdf")
                 
                 full_text = ""
                 for page in doc:
                     text = page.get_text("text")
-                    # Satır sonu ve boşluk temizliği
                     text = text.replace('-\n', '').replace('\n', ' ')
                     full_text += text + " "
                 
@@ -38,34 +36,36 @@ if uploaded_files:
                         full_text = full_text.split(kw)[0]
                         break
                 
-                # Güçlendirilmiş APA Desenleri
+                # Gelişmiş Desenler
                 patterns = {
-                    'Parantez İçi (APA)': r'\([A-ZÇĞİÖŞÜ][^)]+\d{4}[^)]*\)',
-                    'Metin İçi (Anlatı)': r'[A-ZÇĞİÖŞÜ][a-zçğıöşü]{2,}[^()]{0,50}\(\d{4}\)'
+                    'Parantez İçi': r'\([A-ZÇĞİÖŞÜ][^)]+\d{4}[^)]*\)',
+                    'Metin İçi': r'[A-ZÇĞİÖŞÜ][a-zçğıöşü]{2,}[^()]{0,50}\(\d{4}\)'
                 }
                 
                 for style, pattern in patterns.items():
                     found = re.findall(pattern, full_text)
                     for item in found:
-                        item_clean = re.sub(r'\s+', ' ', item).strip()
-                        
-                        # Filtreleme
-                        if style == 'Metin İçi (Anlatı)' and (len(item_clean) > 80 or len(item_clean) < 5):
-                            continue
-                        
-                        # Yıl ve Yazar Ayıklama
-                        yil_match = re.search(r'\d{4}', item_clean)
-                        yil = yil_match.group() if yil_match else ""
-                        yazar = item_clean.split('(')[0].strip() if '(' in item_clean else item_clean
-                        yazar = yazar.strip('() ,;')
+                        # Eğer parantez içinde noktalı virgül varsa, bunlar ayrı alıntılardır (Örn: Gladden...; Rivers...)
+                        if ';' in item and style == 'Parantez İçi':
+                            parts = item.strip('()').split(';')
+                        else:
+                            parts = [item]
 
-                        all_data.append({
-                            "Dosya Adı": uploaded_file.name,
-                            "Yazar/Grup": yazar,
-                            "Yıl": yil,
-                            "Stil": style,
-                            "Tam Alıntı": item_clean
-                        })
+                        for part in parts:
+                            part_clean = part.strip()
+                            yil_match = re.search(r'\d{4}', part_clean)
+                            if yil_match:
+                                yil = yil_match.group()
+                                # Yazar ismini temizle
+                                yazar = part_clean.split(',')[0].split('(')[0].strip()
+                                
+                                all_data.append({
+                                    "Dosya Adı": uploaded_file.name,
+                                    "Yazar/Grup": yazar,
+                                    "Yıl": yil,
+                                    "Stil": style,
+                                    "Tam Alıntı": part_clean if '(' in part_clean else f"({part_clean})"
+                                })
                 doc.close()
             except Exception as e:
                 st.error(f"Hata: {uploaded_file.name} - {str(e)}")
@@ -75,7 +75,6 @@ if uploaded_files:
         st.success(f"İşlem Tamam! {len(df)} alıntı listelendi.")
         st.dataframe(df, use_container_width=True)
         
-        # Excel İndirme
         output = io.BytesIO()
         try:
             with pd.ExcelWriter(output) as writer:
