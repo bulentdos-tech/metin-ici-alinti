@@ -72,7 +72,7 @@ if uploaded_files:
         
         # Excel İndirme Butonu
         output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        with pd.ExcelWriter(output) as writer:
             df.to_excel(writer, index=False)
         
         st.download_button(
