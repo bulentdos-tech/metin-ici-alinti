@@ -6,25 +6,23 @@ import io
 
 st.set_page_config(page_title="Akademik Denetçi Pro", layout="wide")
 
-st.title("🔍 Profesyonel Atıf Denetçisi (Kesin Çözüm)")
-st.markdown("Excel'deki birleşik kaynakça maddeleri ve 'Buzan' hatası için geliştirilmiş versiyon.")
+st.title("🔍 Profesyonel Atıf Denetçisi (Hatasız Sürüm)")
+st.markdown("`re.PatternError` düzeltildi. Kaynakça artık yazarların başlangıç noktalarından (Soyadı, A.) bölünmektedir.")
 
-# Filtre: Atıf olmayan kelimeler
 KARA_LISTE = ["march", "april", "university", "journal", "retrieved", "from", "doi", "http", "https", "pdf", "page", "january"]
 
 uploaded_file = st.file_uploader("PDF Dosyanızı Yükleyin", type="pdf")
 
 if uploaded_file:
-    with st.spinner('Metin ayrıştırılıyor ve kaynakça yapısı çözülüyor...'):
+    with st.spinner('Metin ayrıştırılıyor...'):
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         full_text = ""
         for page in doc:
-            # Sayfa geçişlerinde yapay birleşmeyi önlemek için boşluk ekle
             full_text += page.get_text("text") + " \n "
         doc.close()
         full_text = re.sub(r'[ \t]+', ' ', full_text)
 
-    # 1. Kaynakça Bölümünü Ayır
+    # 1. Kaynakça Bölümünü Bul
     ref_keywords = [r'\bReferences\b', r'\bKaynakça\b', r'\bKAYNAKÇA\b']
     split_index = -1
     for kw in ref_keywords:
@@ -37,13 +35,14 @@ if uploaded_file:
         body_text = full_text[:split_index]
         raw_ref_section = full_text[split_index:].replace('References', '')
         
-        # --- 🚀 KRİTİK AYRIŞTIRMA MANTIĞI (Burayı güncelledik) ---
-        # Kaynakçayı şu kurala göre parçala:
-        # Bir nokta(.), sayfa numarası(62) veya .pdf bitişinden hemen sonra;
-        # Büyük Harf Soyadı + Virgül + Baş Harf geliyorsa orayı kes.
-        pattern = r'(?<=\.pdf|\d{2,4}\.|\d|\.|\)|/)\s+(?=[A-ZÇĞİÖŞÜ][a-zçğıöşü]+,?\s+[A-Z]\.?\s*(?:&|and)?\s*[A-Z]?\.?\s*\(?\d{4}\)?)'
+        # --- 🚀 HATASIZ BÖLME MANTIĞI ---
+        # Look-behind hatasını önlemek için doğrudan yazar dizilimine (Soyadı, A.) odaklanıyoruz.
+        # Bu desen: "Nokta + Boşluk + Büyük Harf + Küçük Harfler + Virgül + Boşluk + Büyük Harf + Nokta" yapısını arar.
+        pattern = r'\.\s+(?=[A-ZÇĞİÖŞÜ][a-zçğıöşü]+,?\s+[A-Z]\.)'
         ref_blocks = re.split(pattern, raw_ref_section)
-        ref_blocks = [b.strip() for b in ref_blocks if len(b.strip()) > 20]
+        
+        # İlk blokta kalan noktayı temizlemek gerekebilir, blokları rafine edelim
+        ref_blocks = [b.strip() for b in ref_blocks if len(b.strip()) > 15]
 
         # 2. Atıf Analizi
         found_raw = []
@@ -72,9 +71,9 @@ if uploaded_file:
                 is_found = False
                 main_author = authors[0]
                 
-                # --- 🎯 HASSAS EŞLEŞTİRME ---
+                # --- 🎯 AKILLI EŞLEŞTİRME ---
                 for block in ref_blocks:
-                    # Sadece yıl yetmez, yazar ismi de o KÜÇÜK PARÇA içinde geçmeli
+                    # Yazar ismi ve Yıl aynı parça içinde mi?
                     if main_author.lower() in block.lower() and year in block:
                         matched_full_ref = block
                         is_found = True
@@ -85,7 +84,7 @@ if uploaded_file:
                     "Ana Yazar": main_author,
                     "Yıl": year,
                     "Durum": "✅ Var" if is_found else "❌ Yok",
-                    "Kaynakçadaki Doğru Karşılığı": matched_full_ref
+                    "Kaynakçadaki Karşılığı": matched_full_ref
                 })
 
         df_res = pd.DataFrame(results).drop_duplicates(subset=['Metindeki Atıf'])
@@ -97,10 +96,10 @@ if uploaded_file:
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df_res.to_excel(writer, index=False)
-        st.download_button("📥 Düzeltilmiş Excel Raporu", output.getvalue(), "denetim_kesin_sonuc.xlsx")
+        st.download_button("📥 Excel Raporunu İndir", output.getvalue(), "denetim_sonucu.xlsx")
 
-        with st.expander("Sistemin Parçaladığı Kaynakları Kontrol Et"):
+        with st.expander("Sistem Kaynakçayı Nasıl Ayırdı? (Kontrol Paneli)"):
             for i, b in enumerate(ref_blocks):
-                st.text(f"{i+1}. {b}")
+                st.text(f"Kaynak {i+1}: {b}")
     else:
-        st.error("Kaynakça bulunamadı.")
+        st.error("Kaynakça başlığı bulunamadı.")
