@@ -4,92 +4,97 @@ import re
 import fitz  # PyMuPDF
 import io
 
-# Sayfa Ayarları
-st.set_page_config(page_title="Akademik Alıntı Ayıklayıcı", layout="wide")
+st.set_page_config(page_title="Akademik Denetçi", layout="wide")
 
-st.title("📄 Akademik PDF Alıntı Ayıklayıcı")
-st.markdown("PDF dosyalarınızı yükleyin, metin içi alıntıları (APA) otomatik olarak Excel'e aktaralım.")
+st.title("🔍 Akademik Atıf & Kaynakça Denetçisi")
+st.markdown("PDF'deki metin içi alıntıları ve kaynakçayı karşılaştırarak eksikleri tespit eder.")
 
-uploaded_files = st.file_uploader("PDF Dosyalarını Seçin", type="pdf", accept_multiple_files=True)
+uploaded_file = st.file_uploader("Bir PDF Dosyası Yükleyin", type="pdf")
 
-if uploaded_files:
-    all_data = []
-    
-    with st.spinner('Dosyalar analiz ediliyor...'):
-        for uploaded_file in uploaded_files:
-            try:
-                file_content = uploaded_file.read()
-                doc = fitz.open(stream=file_content, filetype="pdf")
-                
-                full_text = ""
-                for page in doc:
-                    text = page.get_text("text")
-                    text = text.replace('-\n', '').replace('\n', ' ')
-                    full_text += text + " "
-                
-                full_text = re.sub(r'\s+', ' ', full_text)
-                
-                # Kaynakçayı kes
-                ref_keywords = ['Kaynakça', 'References', 'KAYNAKÇA', 'REFERENCES']
-                for kw in ref_keywords:
-                    if kw in full_text:
-                        full_text = full_text.split(kw)[0]
-                        break
-                
-                # Gelişmiş Desenler
-                patterns = {
-                    'Parantez İçi': r'\([A-ZÇĞİÖŞÜ][^)]+\d{4}[^)]*\)',
-                    'Metin İçi': r'[A-ZÇĞİÖŞÜ][a-zçğıöşü]{2,}[^()]{0,50}\(\d{4}\)'
-                }
-                
-                for style, pattern in patterns.items():
-                    found = re.findall(pattern, full_text)
-                    for item in found:
-                        # Eğer parantez içinde noktalı virgül varsa, bunlar ayrı alıntılardır (Örn: Gladden...; Rivers...)
-                        if ';' in item and style == 'Parantez İçi':
-                            parts = item.strip('()').split(';')
-                        else:
-                            parts = [item]
+if uploaded_file:
+    all_text = ""
+    with st.spinner('Dosya analiz ediliyor...'):
+        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+        for page in doc:
+            all_text += page.get_text("text").replace('-\n', '').replace('\n', ' ') + " "
+        doc.close()
 
-                        for part in parts:
-                            part_clean = part.strip()
-                            yil_match = re.search(r'\d{4}', part_clean)
-                            if yil_match:
-                                yil = yil_match.group()
-                                # Yazar ismini temizle
-                                yazar = part_clean.split(',')[0].split('(')[0].strip()
-                                
-                                all_data.append({
-                                    "Dosya Adı": uploaded_file.name,
-                                    "Yazar/Grup": yazar,
-                                    "Yıl": yil,
-                                    "Stil": style,
-                                    "Tam Alıntı": part_clean if '(' in part_clean else f"({part_clean})"
-                                })
-                doc.close()
-            except Exception as e:
-                st.error(f"Hata: {uploaded_file.name} - {str(e)}")
+    # 1. Metni ve Kaynakçayı Ayır
+    ref_keywords = [r'\bKaynakça\b', r'\bReferences\b', r'\bKAYNAKÇA\b', r'\bREFERENCES\b']
+    split_index = -1
+    for kw in ref_keywords:
+        match = re.search(kw, all_text)
+        if match:
+            split_index = match.start()
+            break
 
-    if all_data:
-        df = pd.DataFrame(all_data).drop_duplicates()
-        st.success(f"İşlem Tamam! {len(df)} alıntı listelendi.")
-        st.dataframe(df, use_container_width=True)
+    if split_index != -1:
+        body_text = all_text[:split_index]
+        references_text = all_text[split_index:]
         
-        output = io.BytesIO()
-        try:
-            with pd.ExcelWriter(output) as writer:
-                df.to_excel(writer, index=False)
+        # 2. Metin İçi Alıntıları Bul (Yazar ve Yıl)
+        # Örn: (Smith, 2020) veya Smith (2020)
+        citation_pattern = r'([A-ZÇĞİÖŞÜ][a-zçğıöşü]+(?:\s[A-ZÇĞİÖŞÜ][a-zçğıöşü]+)?(?: et al\.)?)[^()]*\((\d{4})\)'
+        paren_pattern = r'\(([A-ZÇĞİÖŞÜ][a-zçğıöşü\s,]+),\s(\d{4})\)'
+        
+        found_citations = []
+        
+        # Parantez dışındakiler
+        for match in re.finditer(citation_pattern, body_text):
+            found_citations.append({"yazar": match.group(1), "yil": match.group(2), "tip": "Metin İçi"})
             
-            st.download_button(
-                label="📊 Excel Dosyasını İndir",
-                data=output.getvalue(),
-                file_name="alintilar.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-        except Exception as excel_hata:
-            st.error(f"Excel hatası: {excel_hata}")
+        # Parantez içindekiler
+        for match in re.finditer(paren_pattern, body_text):
+            found_citations.append({"yazar": match.group(1), "yil": match.group(2), "tip": "Parantez İçi"})
+
+        df_citations = pd.DataFrame(found_citations).drop_duplicates()
+
+        # 3. Karşılaştırma Yap
+        results = []
+        for _, row in df_citations.iterrows():
+            # Kaynakça içinde yazar ve yıl geçiyor mu?
+            # Basit kontrol: Yazar ismi ve Yıl aynı "paragraf" veya yakınlıkta mı?
+            yazar_soyad = row['yazar'].split()[-1] if ' ' in row['yazar'] else row['yazar']
+            match_in_ref = re.search(f"{yazar_soyad}.*{row['yil']}", references_text, re.IGNORECASE)
+            
+            status = "✅ Kaynakçada Var" if match_in_ref else "❌ KAYNAKÇADA EKSİK!"
+            results.append({
+                "Alıntı": f"{row['yazar']} ({row['yil']})",
+                "Tür": row['tip'],
+                "Durum": status
+            })
+
+        df_results = pd.DataFrame(results)
+
+        # 4. Arayüz Gösterimi
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("📊 Atıf Analizi")
+            st.dataframe(df_results, use_container_width=True)
+
+        with col2:
+            st.subheader("📝 Tespit Edilen Eksikler")
+            eksikler = df_results[df_results['Durum'] == "❌ KAYNAKÇADA EKSİK!"]
+            if not eksikler.empty:
+                st.error(f"{len(eksikler)} adet eksik kaynak tespit edildi!")
+                st.table(eksikler[['Alıntı']])
+            else:
+                st.success("Harika! Tüm metin içi atıflar kaynakçada bulunuyor.")
+
+        # Excel İndirme
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df_results.to_excel(writer, index=False)
+        
+        st.download_button(
+            label="Raporu Excel Olarak İndir",
+            data=output.getvalue(),
+            file_name="atik_kontrol_raporu.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
     else:
-        st.info("Alıntı bulunamadı.")
+        st.warning("PDF içinde 'Kaynakça' veya 'References' başlığı bulunamadı. Lütfen dosyanızı kontrol edin.")
 
 st.divider()
-st.caption("Geliştirici: Bülent Dos | Akademik Araştırma Araçları")
+st.caption("Geliştirici: Bülent Dos | Akademik Denetim Araçları")
