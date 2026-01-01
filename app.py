@@ -6,8 +6,8 @@ import io
 
 st.set_page_config(page_title="Akademik Denetçi Pro", layout="wide")
 
-st.title("🔍 Profesyonel Atıf & Kaynakça Denetçisi")
-st.markdown("Bu sürümde eşleşen kaynaklar tam metin olarak Excel'e eklenir ve sayfa sonunda listelenir.")
+st.title("🔍 Kesinleştirilmiş Atıf & Kaynakça Denetçisi")
+st.markdown("Bu sürümde kaynakça parçalama mantığı optimize edildi ve Excel çıktısı güçlendirildi.")
 
 KARA_LISTE = [
     "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december",
@@ -24,36 +24,40 @@ if uploaded_file:
         for page in doc:
             text = page.get_text("text")
             text = re.sub(r'-\s*\n', '', text)
-            text = text.replace('\n', ' ')
+            text = text.replace('\n', ' [NL] ') # Satır sonlarını işaretle (ayrıştırma için)
             full_text += text + " "
         doc.close()
         full_text = re.sub(r'\s+', ' ', full_text)
 
-    # 1. Kaynakçayı Bul ve Parçala
-    ref_keywords = [r'\bKaynakça\b', r'\bReferences\b', r'\bKAYNAKÇA\b']
+    # 1. Kaynakça Bölümünü Tespit Et
+    ref_keywords = [r'Kaynakça', r'References', r'KAYNAKÇA', r'REFERENCES', r'Kaynaklar']
     split_index = -1
     for kw in ref_keywords:
-        matches = list(re.finditer(kw, full_text, re.IGNORECASE))
-        if matches:
-            split_index = matches[-1].start()
+        # Kelime sınırı olmadan ara (bitişik yazılmış olabilir)
+        match = re.search(kw, full_text)
+        if match:
+            # Genelde kaynakça sondadır, son eşleşmeyi bulalım
+            all_matches = list(re.finditer(kw, full_text))
+            split_index = all_matches[-1].start()
             break
 
     if split_index != -1:
         body_text = full_text[:split_index]
         raw_ref_section = full_text[split_index:]
         
-        # Kaynakçayı tekil kaynaklara bölmeye çalış (Genellikle (Yıl) veya Soyad ile ayrılır)
-        # Basit bir yöntem: Her kaynağı yazar soyadlarından tahmin etmeye çalışalım
-        # Şimdilik karşılaştırma için kaynakçayı cümle cümle veya blok blok saklayalım
-        ref_blocks = re.split(r'(?=[A-ZÇĞİÖŞÜ][a-zçğıöşü]+,\s[A-Z]\.)', raw_ref_section)
+        # Kaynakçayı her bir kaynak için parçalara ayır
+        # Genellikle her kaynak [NL] (yeni satır) ile başlar
+        ref_blocks = [b.replace('[NL]', '').strip() for b in raw_ref_section.split(' [NL] ') if len(b.strip()) > 20]
 
         # 2. Atıf Ayıklama
         found_raw = []
+        # Parantez içi
         paren_groups = re.findall(r'\(([^)]+\d{4}[a-z]?)\)', body_text)
         for group in paren_groups:
             for sub in group.split(';'):
                 found_raw.append({"text": sub.strip(), "type": "Parantez İçi"})
         
+        # Metin içi
         inline_matches = re.finditer(r'([A-ZÇĞİÖŞÜ][a-zçğıöşü]+(?:\s+et\s+al\.)?)\s*\((\d{4}[a-z]?)\)', body_text)
         for m in inline_matches:
             found_raw.append({"text": f"{m.group(1)} ({m.group(2)})", "type": "Metin İçi"})
@@ -72,13 +76,13 @@ if uploaded_file:
             authors = [a for a in authors if len(a) > 2]
             
             if authors:
-                matched_ref_text = "Bulunamadı"
+                matched_full_ref = "KAYNAKÇADA BULUNAMADI"
                 is_found = False
                 
-                # Kaynakçada bu atıfın tam metnini ara
+                # Kaynakçadaki her bloğu kontrol et
                 for block in ref_blocks:
                     if any(a.lower() in block.lower() for a in authors) and year in block:
-                        matched_ref_text = block.strip()
+                        matched_full_ref = block
                         is_found = True
                         break
                 
@@ -87,27 +91,31 @@ if uploaded_file:
                     "Yazarlar": ", ".join(authors),
                     "Yıl": year,
                     "Durum": "✅ Var" if is_found else "❌ Yok",
-                    "Kaynakçadaki Tam Metni": matched_ref_text
+                    "Kaynakçadaki Tam Karşılığı": matched_full_ref
                 })
 
         df_res = pd.DataFrame(results).drop_duplicates(subset=['Metindeki Atıf'])
 
-        # 3. Arayüz ve Excel
-        st.subheader("📊 Atıf ve Kaynakça Karşılaştırma Tablosu")
+        # 3. Görselleştirme
+        st.subheader("📊 Atıf & Kaynakça Eşleşme Raporu")
         st.dataframe(df_res, use_container_width=True)
         
         # Excel
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df_res.to_excel(writer, index=False)
-        st.download_button("📥 Excel Raporunu İndir", output.getvalue(), "atik_kaynakca_denetimi.xlsx")
+        st.download_button("📥 Excel Raporunu İndir", output.getvalue(), "denetim_sonuclari.xlsx")
 
-        # 4. Sayfa Altına Tüm Kaynakçayı Listele
+        # 4. Kaynakça Önizleme ve Liste
         st.divider()
-        st.subheader("📚 Tespit Edilen Kaynakça Listesi")
-        with st.expander("Tüm Kaynakçayı Görüntüle"):
-            for i, block in enumerate(ref_blocks):
-                if len(block.strip()) > 10:
-                    st.write(f"**[{i}]** {block.strip()}")
+        st.subheader("📚 Ayıklanan Kaynakça Maddeleri")
+        with st.expander("PDF'den ayrıştırılan tüm kaynakları gör"):
+            if ref_blocks:
+                for b in ref_blocks:
+                    st.markdown(f"- {b}")
+            else:
+                st.warning("Kaynakça başlığı bulundu ama maddeler ayrıştırılamadı.")
+                st.text("Ham Metin Önizlemesi:")
+                st.write(raw_ref_section[:1000])
     else:
-        st.error("Kaynakça bölümü tespit edilemedi.")
+        st.error("Kaynakça bölümü (References/Kaynakça) tespit
