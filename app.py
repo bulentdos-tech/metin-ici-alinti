@@ -21,135 +21,77 @@ if uploaded_file:
             full_text += page.get_text("text") + " \n "
         doc.close()
         
+        # Metni temizle ama yapıyı koru
         full_text = re.sub(r'[ \t]+', ' ', full_text)
 
-    # BÖLÜM AYIRMA
+    # 1. BÖLÜM: METİN VE KAYNAKÇAYI BIÇAKLA KESER GİBİ AYIR
+    # 'References' kelimesinin en son geçtiği yeri bul (genelde son sayfalardadır)
     split_index = -1
-    ref_matches = list(re.finditer(r'\b(References|Kaynakça|KAYNAKÇA|REFERENCES)\b', full_text, re.IGNORECASE))
+    ref_matches = list(re.finditer(r'\b(References|Kaynakça|KAYNAKÇA)\b', full_text, re.IGNORECASE))
     
     if ref_matches:
+        # En sondaki eşleşmeyi al (İçindekiler kısmıyla karışmaması için)
         split_index = ref_matches[-1].start()
 
     if split_index != -1:
-        body_text = full_text[:split_index]
-        ref_text = full_text[split_index:]
+        # --- ÖNEMLİ AYRIM ---
+        body_text = full_text[:split_index]  # SADECE BURADA ARAMA YAPACAĞIZ
+        ref_text = full_text[split_index:]   # BURADAN KAYNAKLARI ÇEKECEĞİZ
 
-        # KAYNAKÇAYI PARSE ET
+        # 2. BÖLÜM: KAYNAKÇADAKİ ESERLERİ TESPİT ET
+        # APA formatındaki 'Soyadı, A. (Yıl)' yapısını yakalar
         ref_blocks = re.split(r'\n(?=[A-ZÇĞİÖŞÜ][a-zçğıöşü]+,?\s+[A-Z]\.)', ref_text)
         ref_blocks = [b.strip() for b in ref_blocks if len(b.strip()) > 15]
 
-        missing_in_body = []
-        year_mismatch = []
+        missing_in_body = [] # Sildiğiniz kaynaklar buraya düşecek
+        year_mismatch = []   # Zhai (2022) vs (2023) buraya düşecek
 
         for block in ref_blocks:
-            # TÜM YAZARLARI ÇIKAR (çok yazarlı kaynaklar için)
-            # Örn: "Smith, J., Jones, M., & Brown, K. (2020)" -> [Smith, Jones, Brown]
-            all_authors = []
-            
-            # İlk yazarı yakala
-            first_auth = re.search(r'^([A-ZÇĞİÖŞÜ][a-zçğıöşü]+)', block)
-            if first_auth:
-                all_authors.append(first_auth.group(1))
-            
-            # Diğer yazarları yakala (virgülden sonra gelenler)
-            other_auths = re.findall(r',\s+(?:&\s+)?([A-ZÇĞİÖŞÜ][a-zçğıöşü]+),?\s+[A-Z]\.', block)
-            all_authors.extend(other_auths)
-            
-            # Yılı çıkar
+            # Bloktan yazar soyadını ve yılı çek
+            # Örn: "Perkins, K. (2023)..." -> Soyad: Perkins, Yıl: 2023
+            auth_match = re.search(r'^([A-ZÇĞİÖŞÜ][a-zçğıöşü]+)', block)
             year_match = re.search(r'\((\d{4})\)', block)
             
-            if all_authors and year_match:
+            if auth_match and year_match:
+                soyad = auth_match.group(1)
                 yil = year_match.group(1)
-                birinci_yazar = all_authors[0]
                 
-                # KRİTİK DEĞİŞİKLİK: Herhangi bir yazarın geçip geçmediğini kontrol et
-                found_any_author = False
-                for soyad in all_authors:
-                    pattern = rf"\b{soyad}\b"
-                    if re.search(pattern, body_text, re.IGNORECASE):
-                        found_any_author = True
-                        break
+                # KRİTİK: Sadece body_text içinde tam kelime araması yap
+                # \b (word boundary) çok önemli: 'Swales' ararken 'Sweller'ı bulmaz.
+                pattern = rf"\b{soyad}\b"
+                found_in_body = re.search(pattern, body_text, re.IGNORECASE)
                 
-                # Et al. kontrolü de ekle
-                if not found_any_author:
-                    # "İlk yazar et al." formatını kontrol et
-                    et_al_pattern = rf"\b{birinci_yazar}\s+et\s+al\.?"
-                    if re.search(et_al_pattern, body_text, re.IGNORECASE):
-                        found_any_author = True
-                
-                if not found_any_author:
-                    # HİÇBİR YAZAR METINDE YOK
-                    authors_display = ", ".join(all_authors[:3])
-                    if len(all_authors) > 3:
-                        authors_display += " et al."
-                    missing_in_body.append({"Kaynakçadaki Eser": f"{authors_display} ({yil})"})
+                if not found_in_body:
+                    # EĞER METİNDE HİÇ YOKSA (Sildiğiniz durum)
+                    missing_in_body.append({"Kaynakçadaki Eser": f"{soyad} ({yil})"})
                 else:
-                    # En az bir yazar var, şimdi yıl kontrolü
-                    year_found = False
-                    for soyad in all_authors:
-                        year_pattern = rf"{soyad}.*?{yil}|{yil}.*?{soyad}"
-                        if re.search(year_pattern, body_text, re.IGNORECASE | re.DOTALL):
-                            year_found = True
-                            break
-                    
-                    # Et al. ile yıl kontrolü
-                    if not year_found:
-                        et_al_year = rf"{birinci_yazar}\s+et\s+al\.?.*?{yil}|{yil}.*?{birinci_yazar}\s+et\s+al\.?"
-                        if re.search(et_al_year, body_text, re.IGNORECASE | re.DOTALL):
-                            year_found = True
-                    
-                    if not year_found:
-                        # Yazar var ama yıl yanlış
-                        actual_year_match = re.search(rf"{birinci_yazar}.*?(\d{{4}})", body_text, re.IGNORECASE | re.DOTALL)
-                        metin_yili = actual_year_match.group(1) if actual_year_match else "Bulunamadı"
+                    # İsim var ama yıl doğru mu? (Zhai hatası için)
+                    # Yazar isminin geçtiği yerin yakınında o yıl var mı?
+                    year_pattern = rf"{soyad}.*?{yil}|{yil}.*?{soyad}"
+                    if not re.search(year_pattern, body_text, re.IGNORECASE | re.DOTALL):
+                        # İsim var ama bu yılla hiç geçmiyor
+                        # Metindeki mevcut yılı bulmaya çalış
+                        actual_year = re.search(rf"{soyad}.*?(\d{{4}})", body_text, re.IGNORECASE | re.DOTALL)
+                        metin_yili = actual_year.group(1) if actual_year else "Bulunamadı"
                         year_mismatch.append({
-                            "Yazar": birinci_yazar,
+                            "Yazar": soyad,
                             "Kaynakçada": yil,
                             "Metinde": metin_yili
                         })
 
-        # METİNDE VAR KAYNAKÇADA YOK
+        # 3. BÖLÜM: METİNDE VAR KAYNAKÇADA YOK (Biggs & Tang vb.)
         missing_in_ref = []
-        
-        # Tek yazar: Author (2020) veya (Author, 2020)
-        single_cits = re.findall(r'([A-ZÇĞİÖŞÜ][a-zA-ZçğıöşüÇĞİÖŞÜ]+)\s*\((\d{4})\)', body_text)
-        
-        # Çift yazar: Author & Author (2020) veya Author and Author (2020)
-        double_cits = re.findall(r'([A-ZÇĞİÖŞÜ][a-zA-ZçğıöşüÇĞİÖŞÜ]+)\s+(?:&|and)\s+([A-ZÇĞİÖŞÜ][a-zA-ZçğıöşüÇĞİÖŞÜ]+)\s*\((\d{4})\)', body_text)
-        
-        # Et al: Author et al. (2020)
-        et_al_cits = re.findall(r'([A-ZÇĞİÖŞÜ][a-zA-ZçğıöşüÇĞİÖŞÜ]+)\s+et\s+al\.?\s*\((\d{4})\)', body_text)
-        
-        # Tek yazar kontrolü
-        for b_auth, b_year in single_cits:
+        # Metin içi atıf kalıplarını bul: (Yazar, 2020) veya Yazar (2020)
+        body_cits = re.findall(r'([A-ZÇĞİÖŞÜ][a-zA-ZçğıöşüÇĞİÖŞÜ]+)\s*\((\d{4})\)', body_text)
+        for b_auth, b_year in body_cits:
             if any(k in b_auth.lower() for k in KARA_LISTE): continue
             
+            # Kaynakçada bu soyad ve yıl var mı?
             is_in_ref = any(b_auth.lower() in r_block.lower() and b_year in r_block for r_block in ref_blocks)
             if not is_in_ref:
-                if {"Metindeki Atıf": f"{b_auth} ({b_year})"} not in missing_in_ref:
-                    missing_in_ref.append({"Metindeki Atıf": f"{b_auth} ({b_year})"})
-        
-        # Çift yazar kontrolü
-        for auth1, auth2, b_year in double_cits:
-            if any(k in auth1.lower() for k in KARA_LISTE): continue
-            
-            is_in_ref = any((auth1.lower() in r_block.lower() and auth2.lower() in r_block.lower() and b_year in r_block) for r_block in ref_blocks)
-            if not is_in_ref:
-                citation_str = f"{auth1} & {auth2} ({b_year})"
-                if {"Metindeki Atıf": citation_str} not in missing_in_ref:
-                    missing_in_ref.append({"Metindeki Atıf": citation_str})
-        
-        # Et al kontrolü
-        for b_auth, b_year in et_al_cits:
-            if any(k in b_auth.lower() for k in KARA_LISTE): continue
-            
-            is_in_ref = any(b_auth.lower() in r_block.lower() and b_year in r_block for r_block in ref_blocks)
-            if not is_in_ref:
-                citation_str = f"{b_auth} et al. ({b_year})"
-                if {"Metindeki Atıf": citation_str} not in missing_in_ref:
-                    missing_in_ref.append({"Metindeki Atıf": citation_str})
+                missing_in_ref.append({"Metindeki Atıf": f"{b_auth} ({b_year})"})
 
-        # EKRAN ÇIKTILARI
+        # --- EKRAN ÇIKTILARI ---
         col1, col2 = st.columns(2)
 
         with col1:
