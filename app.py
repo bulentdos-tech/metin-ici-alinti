@@ -3,75 +3,75 @@ import pandas as pd
 import re
 import fitz
 
-st.set_page_config(page_title="Akademik Denetçi Kesin Sonuç", layout="wide")
-st.title("🔍 Atıf & Kaynakça Çapraz Denetçi")
+st.set_page_config(page_title="Akademik Denetçi Pro", layout="wide")
+st.title("🔍 Kesin Sonuçlu Atıf Denetçisi")
 
 uploaded_file = st.file_uploader("PDF Dosyanızı Yükleyin", type="pdf")
 
 if uploaded_file:
-    with st.spinner('Analiz yapılıyor...'):
+    with st.spinner('Derin analiz yapılıyor...'):
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         full_text = ""
         for page in doc:
             full_text += page.get_text("text") + "\n"
         doc.close()
         
-        # Metin temizleme (PDF karakter hatalarını onarır)
-        full_text = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', full_text)
+        # Gereksiz boşlukları ve gizli karakterleri temizle
         full_text = re.sub(r'\s+', ' ', full_text)
 
-    # 1. KAYNAKÇA AYIRMA
-    ref_matches = list(re.finditer(r'\b(References|Kaynakça|KAYNAKÇA)\b', full_text, re.IGNORECASE))
+    # 1. ADIM: KAYNAKÇAYI DOĞRU YERDEN KES (Garantili Yöntem)
+    # References kelimesinin EN SON geçtiği yeri bul
+    all_refs = list(re.finditer(r'\b(References|Kaynakça|KAYNAKÇA)\b', full_text, re.IGNORECASE))
     
-    if ref_matches:
-        split_point = ref_matches[-1].start()
-        body_text = full_text[:split_point]
-        ref_section = full_text[split_point:]
+    if all_refs:
+        split_idx = all_refs[-1].start() # En sondaki başlığı baz al
+        body_text = full_text[:split_idx]
+        ref_text = full_text[split_idx:]
 
-        # 2. KAYNAKÇADAKİ ESERLERİ BUL
-        ref_entries = re.findall(r'([A-ZÇĞİÖŞÜ][a-zçğıöşü]+),\s+[A-Z]\..*?\((\d{4})\)', ref_section)
+        # 2. ADIM: KAYNAKÇADAKİ ESERLERİ LİSTELE
+        # Soyadı, A. (Yıl) yapısını yakalar
+        refs = re.findall(r'([A-ZÇĞİÖŞÜ][a-zçğıöşü]+),\s+[A-Z]\..*?\((\d{4})\)', ref_text)
 
-        # 3. METİN İÇİ ATIFLARI BUL
-        body_citations = re.findall(r'([A-ZÇĞİÖŞÜ][a-zA-ZçğıöşüÇĞİÖŞÜ& ]+)\s*\((\d{4}[a-z]?)\)', body_text)
+        # 3. ADIM: METİNDEKİ ATIFLARI LİSTELE
+        # Yazar (Yıl) veya (Yazar, Yıl) yapılarını yakalar
+        cites = re.findall(r'([A-ZÇĞİÖŞÜ][a-zA-ZçğıöşüÇĞİÖŞÜ& ]+)\s*\((\d{4}[a-z]?)\)', body_text)
 
-        # GÜVENLİK KONTROLÜ: Eğer kod metinde hiç atıf bulamadıysa bir sorun var demektir
-        if len(body_citations) == 0:
-            st.warning("⚠️ Uyarı: Metin içerisinde hiç atıf (Örn: Yazar (2020)) tespit edilemedi. Lütfen PDF formatını kontrol edin.")
-        
-        errors = []
+        results = []
 
-        # DENETİM: Kaynakçada var, Metinde yok (Hyland, Perkins, Swales vb.)
-        for r_auth, r_year in ref_entries:
-            # Metinde yazar ve yıl yan yana mı? (En esnek arama)
-            found = re.search(rf"{r_auth}.{{0,50}}{r_year}", body_text, re.IGNORECASE)
+        # --- KRİTİK KONTROL: KAYNAKÇADA VAR METİNDE YOK ---
+        for r_auth, r_year in refs:
+            # Metinde bu yazar VE bu yıl yan yana geçiyor mu?
+            # Tam kelime eşleşmesi (\b) kullanarak 'Swales' ararken 'Sweller'ı bulmasını engelliyoruz.
+            pattern = rf"\b{r_auth}\b.*?{r_year}"
+            found = re.search(pattern, body_text, re.IGNORECASE)
             
             if not found:
-                errors.append({
+                results.append({
                     "Eser": f"{r_auth} ({r_year})",
                     "Hata": "⚠️ Metinde Atıfı Yok",
-                    "Açıklama": "Bu kaynak listede var ama metinden sildiğiniz için bulunamadı."
+                    "Açıklama": "Bu kaynak sildiğiniz için veya unutulduğu için metinde bulunamadı."
                 })
 
-        # DENETİM: Metinde var, Kaynakçada yok (Biggs & Tang vb.)
-        for b_auth, b_year in body_citations:
-            b_clean = b_auth.replace(" et al.", "").replace("&", " ").split()[0].strip()
-            if b_clean.lower() in ["table", "figure", "appendix"]: continue
+        # --- KRİTİK KONTROL: METİNDE VAR KAYNAKÇADA YOK ---
+        for c_auth, c_year in cites:
+            c_clean = c_auth.replace(" et al.", "").replace("&", " ").split()[0].strip()
+            if c_clean.lower() in ["table", "figure", "appendix"]: continue
             
-            in_ref = re.search(rf"{b_clean}.*?{b_year}", ref_section, re.IGNORECASE)
+            in_ref = re.search(rf"\b{c_clean}\b.*?{c_year}", ref_text, re.IGNORECASE)
             if not in_ref:
-                errors.append({
-                    "Eser": f"{b_auth} ({b_year})",
-                    "Hata": "❌ Kaynakçada Kaydı Yok",
+                results.append({
+                    "Eser": f"{c_auth} ({c_year})",
+                    "Hata": "❌ Kaynakçada Yok",
                     "Açıklama": "Metinde atıf var ama kaynakça listesinde eksik."
                 })
 
-        # ÇIKTI
+        # SONUÇLARI GÖSTER
         st.divider()
-        df_errors = pd.DataFrame(errors).drop_duplicates()
-        if not df_errors.empty:
-            st.error(f"🔍 {len(df_errors)} Tutarsızlık Tespit Edildi:")
-            st.table(df_errors)
+        df = pd.DataFrame(results).drop_duplicates()
+        if not df.empty:
+            st.error(f"🔍 Toplam {len(df)} tutarsızlık bulundu:")
+            st.table(df)
         else:
-            st.success("✅ Metin ve Kaynakça tam uyumlu!")
+            st.success("✅ Tebrikler! Metin ve kaynakça %100 uyumlu görünüyor.")
     else:
-        st.error("Kaynakça bölümü tespit edilemedi.")
+        st.error("Kaynakça (References) başlığı bulunamadı.")
