@@ -4,97 +4,102 @@ import re
 import fitz  # PyMuPDF
 import io
 
-st.set_page_config(page_title="Akademik Denetçi", layout="wide")
+st.set_page_config(page_title="Akademik Denetçi v2", layout="wide")
 
-st.title("🔍 Akademik Atıf & Kaynakça Denetçisi")
-st.markdown("PDF'deki metin içi alıntıları ve kaynakçayı karşılaştırarak eksikleri tespit eder.")
+st.title("🔍 Akıllı Atıf & Kaynakça Karşılaştırıcı")
 
-uploaded_file = st.file_uploader("Bir PDF Dosyası Yükleyin", type="pdf")
+uploaded_file = st.file_uploader("PDF Dosyasını Yükleyin", type="pdf")
 
 if uploaded_file:
-    all_text = ""
-    with st.spinner('Dosya analiz ediliyor...'):
+    with st.spinner('Dosya derinlemesine analiz ediliyor...'):
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+        full_text = ""
         for page in doc:
-            all_text += page.get_text("text").replace('-\n', '').replace('\n', ' ') + " "
+            full_text += page.get_text("text").replace('-\n', '').replace('\n', ' ') + " "
         doc.close()
 
-    # 1. Metni ve Kaynakçayı Ayır
-    ref_keywords = [r'\bKaynakça\b', r'\bReferences\b', r'\bKAYNAKÇA\b', r'\bREFERENCES\b']
+    # 1. KAYNAKÇAYI TESPİT ET (Daha esnek bir arama)
+    ref_patterns = [r'\bKaynakça\b', r'\bReferences\b', r'\bBibliyografya\b', r'\bWORKS CITED\b']
     split_index = -1
-    for kw in ref_keywords:
-        match = re.search(kw, all_text)
+    for pattern in ref_patterns:
+        match = list(re.finditer(pattern, full_text, re.IGNORECASE))
         if match:
-            split_index = match.start()
+            # Genelde kaynakça sondadır, o yüzden son eşleşmeyi alalım
+            split_index = match[-1].start()
             break
 
     if split_index != -1:
-        body_text = all_text[:split_index]
-        references_text = all_text[split_index:]
-        
-        # 2. Metin İçi Alıntıları Bul (Yazar ve Yıl)
-        # Örn: (Smith, 2020) veya Smith (2020)
-        citation_pattern = r'([A-ZÇĞİÖŞÜ][a-zçğıöşü]+(?:\s[A-ZÇĞİÖŞÜ][a-zçğıöşü]+)?(?: et al\.)?)[^()]*\((\d{4})\)'
-        paren_pattern = r'\(([A-ZÇĞİÖŞÜ][a-zçğıöşü\s,]+),\s(\d{4})\)'
-        
+        body_text = full_text[:split_index]
+        references_text = full_text[split_index:]
+
+        # Görsel Kontrol İçin Kaynakça Başlangıcını Göster
+        with st.expander("📌 Algılanan Kaynakça Bölümü (İlk 500 Karakter)"):
+            st.write(references_text[:500] + "...")
+
+        # 2. METİN İÇİ ALINTILARI BUL
+        # Desen 1: (Yazar, 2020) veya (Yazar1 & Yazar2, 2020)
+        pattern1 = r'\(([^)]+),\s(\d{4}[a-z]?)\)'
+        # Desen 2: Yazar (2020) veya Yazar et al. (2020)
+        pattern2 = r'([A-ZÇĞİÖŞÜ][a-zçğıöşü]+(?:\set\sal\.)?)\s\((\d{4}[a-z]?)\)'
+
         found_citations = []
         
-        # Parantez dışındakiler
-        for match in re.finditer(citation_pattern, body_text):
-            found_citations.append({"yazar": match.group(1), "yil": match.group(2), "tip": "Metin İçi"})
-            
-        # Parantez içindekiler
-        for match in re.finditer(paren_pattern, body_text):
-            found_citations.append({"yazar": match.group(1), "yil": match.group(2), "tip": "Parantez İçi"})
+        for m in re.finditer(pattern1, body_text):
+            found_citations.append({"yazar": m.group(1), "yil": m.group(2)})
+        for m in re.finditer(pattern2, body_text):
+            found_citations.append({"yazar": m.group(1), "yil": m.group(2)})
 
-        df_citations = pd.DataFrame(found_citations).drop_duplicates()
+        df_raw = pd.DataFrame(found_citations).drop_duplicates()
 
-        # 3. Karşılaştırma Yap
-        results = []
-        for _, row in df_citations.iterrows():
-            # Kaynakça içinde yazar ve yıl geçiyor mu?
-            # Basit kontrol: Yazar ismi ve Yıl aynı "paragraf" veya yakınlıkta mı?
-            yazar_soyad = row['yazar'].split()[-1] if ' ' in row['yazar'] else row['yazar']
-            match_in_ref = re.search(f"{yazar_soyad}.*{row['yil']}", references_text, re.IGNORECASE)
-            
-            status = "✅ Kaynakçada Var" if match_in_ref else "❌ KAYNAKÇADA EKSİK!"
-            results.append({
-                "Alıntı": f"{row['yazar']} ({row['yil']})",
-                "Tür": row['tip'],
-                "Durum": status
+        # 3. KARŞILAŞTIRMA MANTIĞI
+        analysis_results = []
+        ref_text_lower = references_text.lower()
+
+        for _, row in df_raw.iterrows():
+            yazar_ham = row['yazar'].lower()
+            # Soyadını çek: "Smith et al." -> "smith", "Smith & Doe" -> "smith"
+            soyad = re.split(r'[,&\s]|et\sal', yazar_ham)[0].strip()
+            yil = row['yil']
+
+            # Kaynakçada hem soyadı hem yıl aynı anda geçiyor mu?
+            # (Aynı cümle/alan içinde olma şartı aranabilir ama şimdilik metin geneli)
+            if soyad in ref_text_lower and yil in ref_text_lower:
+                durum = "✅ Kaynakçada Mevcut"
+            else:
+                durum = "❌ KAYNAKÇADA BULUNAMADI"
+
+            analysis_results.append({
+                "Metindeki Alıntı": f"{row['yazar']} ({yil})",
+                "Aranan Soyad": soyad,
+                "Yıl": yil,
+                "Durum": durum
             })
 
-        df_results = pd.DataFrame(results)
+        df_final = pd.DataFrame(analysis_results)
 
-        # 4. Arayüz Gösterimi
-        col1, col2 = st.columns(2)
+        # 4. SONUÇLARI GÖSTER
+        col1, col2 = st.columns([2, 1])
         
         with col1:
-            st.subheader("📊 Atıf Analizi")
-            st.dataframe(df_results, use_container_width=True)
+            st.subheader("📊 Tüm Atıflar")
+            def color_rows(val):
+                color = '#ffcccc' if val == "❌ KAYNAKÇADA BULUNAMADI" else '#ccffcc'
+                return f'background-color: {color}'
+            
+            st.dataframe(df_final.style.applymap(color_rows, subset=['Durum']), use_container_width=True)
 
         with col2:
-            st.subheader("📝 Tespit Edilen Eksikler")
-            eksikler = df_results[df_results['Durum'] == "❌ KAYNAKÇADA EKSİK!"]
+            st.subheader("🚨 Eksik Kaynaklar")
+            eksikler = df_final[df_final['Durum'] == "❌ KAYNAKÇADA BULUNAMADI"]
             if not eksikler.empty:
-                st.error(f"{len(eksikler)} adet eksik kaynak tespit edildi!")
-                st.table(eksikler[['Alıntı']])
+                st.error(f"{len(eksikler)} kaynak listede yok!")
+                for e in eksikler['Metindeki Alıntı'].unique():
+                    st.write(f"- {e}")
             else:
-                st.success("Harika! Tüm metin içi atıflar kaynakçada bulunuyor.")
+                st.success("Tüm atıflar kaynakça ile eşleşiyor!")
 
-        # Excel İndirme
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df_results.to_excel(writer, index=False)
-        
-        st.download_button(
-            label="Raporu Excel Olarak İndir",
-            data=output.getvalue(),
-            file_name="atik_kontrol_raporu.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
     else:
-        st.warning("PDF içinde 'Kaynakça' veya 'References' başlığı bulunamadı. Lütfen dosyanızı kontrol edin.")
+        st.error("⚠️ Kaynakça bölümü tespit edilemedi! PDF'de 'Kaynakça' veya 'References' başlığı olduğundan emin olun.")
 
 st.divider()
-st.caption("Geliştirici: Bülent Dos | Akademik Denetim Araçları")
+st.caption("Bülent Dos | Gelişmiş Akademik Denetim Sistemi")
