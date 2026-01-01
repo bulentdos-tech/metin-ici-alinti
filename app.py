@@ -6,15 +6,15 @@ import io
 
 st.set_page_config(page_title="Akademik Denetçi Pro", layout="wide")
 
-st.title("🔍 Profesyonel Atıf Denetçisi (Karşılıklı Kontrol)")
-st.markdown("Bu sürüm metin ve kaynakça arasındaki tutarsızlıkları çift yönlü olarak denetler.")
+st.title("🔍 Profesyonel Atıf Denetçisi")
+st.markdown("Metin içi atıflar ile kaynakça listesi arasındaki tutarsızlıkları raporlar.")
 
 KARA_LISTE = ["march", "april", "university", "journal", "retrieved", "from", "doi", "http", "https", "pdf", "page", "january"]
 
 uploaded_file = st.file_uploader("PDF Dosyanızı Yükleyin", type="pdf")
 
 if uploaded_file:
-    with st.spinner('Metin ve Kaynakça analiz ediliyor...'):
+    with st.spinner('Dosya analiz ediliyor...'):
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         full_text = ""
         for page in doc:
@@ -35,19 +35,19 @@ if uploaded_file:
         body_text = full_text[:split_index]
         raw_ref_section = full_text[split_index:].replace('References', '').replace('Kaynakça', '')
         
-        # Kaynakça bloklarını bölme (Soyadı, A. formatına göre)
+        # Kaynakça bloklarını bölme
         pattern = r'\.\s+(?=[A-ZÇĞİÖŞÜ][a-zçğıöşü]+,?\s+[A-Z]\.)'
         ref_blocks = [b.strip() for b in re.split(pattern, raw_ref_section) if len(b.strip()) > 15]
 
-        # --- ANALİZ 1: METİN İÇİ ATIFLARIN KAYNAKÇADA KONTROLÜ ---
+        # --- ANALİZ 1: METİNDE VAR, KAYNAKÇADA YOK ---
         found_raw = []
-        # (Yazar, 2020) tipi
+        # Parantez içi: (Yazar, 2020)
         paren_groups = re.findall(r'\(([^)]+\d{4}[a-z]?)\)', body_text)
         for group in paren_groups:
             for sub in group.split(';'):
                 found_raw.append(sub.strip())
         
-        # Yazar (2020) tipi
+        # Metin içi: Yazar (2020)
         inline_matches = re.finditer(r'([A-ZÇĞİÖŞÜ][a-zçğıöşü]+(?:\s+et\s+al\.)?)\s*\((\d{4}[a-z]?)\)', body_text)
         for m in inline_matches:
             found_raw.append(f"{m.group(1)} ({m.group(2)})")
@@ -65,21 +65,20 @@ if uploaded_file:
             
             if authors:
                 main_author = authors[0]
+                # Kaynakça blokları içinde yazar ve yıl kontrolü
                 is_found = any(main_author.lower() in block.lower() and year in block for block in ref_blocks)
                 
-                text_to_ref_results.append({
-                    "Metindeki Atıf": item,
-                    "Ana Yazar": main_author,
-                    "Yıl": year,
-                    "Durum": "✅ Kaynakçada Var" if is_found else "❌ Kaynakçada Yok"
-                })
+                if not is_found:
+                    text_to_ref_results.append({
+                        "Metindeki Atıf": item,
+                        "Hata": "❌ Kaynakçada Yok"
+                    })
 
-        df_missing_in_ref = pd.DataFrame(text_to_ref_results).drop_duplicates(subset=['Metindeki Atıf'])
+        df_missing_in_ref = pd.DataFrame(text_to_ref_results).drop_duplicates()
 
-        # --- ANALİZ 2: KAYNAKÇADAKİLERİN METİNDE KONTROLÜ ---
+        # --- ANALİZ 2: KAYNAKÇADA VAR, METİNDE YOK ---
         ref_to_text_results = []
         for block in ref_blocks:
-            # Bloktan yazar ve yıl ayıklama denemesi
             ref_author_match = re.search(r'^([A-ZÇĞİÖŞÜ][a-zçğıöşü]+)', block)
             ref_year_match = re.search(r'(\d{4})', block)
             
@@ -87,43 +86,44 @@ if uploaded_file:
                 author = ref_author_match.group(1)
                 year = ref_year_match.group(1)
                 
-                # Metinde bu yazar ve yıl geçiyor mu?
+                # Metin gövdesinde yazar ve yılın geçtiğini doğrula
                 is_cited = (author.lower() in body_text.lower()) and (year in body_text)
                 
                 if not is_cited:
                     ref_to_text_results.append({
-                        "Kaynakçadaki Eser (Kısa)": block[:100] + "...",
-                        "Yazar": author,
-                        "Yıl": year,
-                        "Durum": "⚠️ Metinde Atıfı Yok"
+                        "Kaynakçadaki Eser": block[:120] + "...",
+                        "Hata": "⚠️ Metinde Atıfı Bulunmadı"
                     })
 
         df_unused_refs = pd.DataFrame(ref_to_text_results)
 
-        # --- SONUÇLARIN GÖSTERİLMESİ ---
+        # --- EKRAN ÇIKTISI ---
         col1, col2 = st.columns(2)
 
         with col1:
-            st.subheader("🚩 Kaynakçada Olmayan Atıflar")
-            missing = df_missing_in_ref[df_missing_in_ref["Durum"] == "❌ Kaynakçada Yok"]
-            if not missing.empty:
-                st.dataframe(missing[["Metindeki Atıf", "Durum"]], use_container_width=True)
+            st.subheader("📌 Metinde Olup Kaynakçada Olmayanlar")
+            if not df_missing_in_ref.empty:
+                st.error(f"{len(df_missing_in_ref)} eksik kaynak tespit edildi.")
+                st.table(df_missing_in_ref)
             else:
-                st.success("Metindeki tüm atıflar kaynakçada mevcut.")
+                st.success("Tüm atıflar kaynakçada eşleşti.")
 
         with col2:
-            st.subheader("🚩 Metinde Atıfı Olmayan Kaynaklar")
+            st.subheader("📌 Kaynakçada Olup Metinde Olmayanlar")
             if not df_unused_refs.empty:
-                st.dataframe(df_unused_refs[["Kaynakçadaki Eser (Kısa)", "Durum"]], use_container_width=True)
+                st.warning(f"{len(df_unused_refs)} kaynak metinde kullanılmamış.")
+                st.table(df_unused_refs)
             else:
-                st.success("Kaynakçadaki tüm eserlere metin içinde atıf yapılmış.")
+                st.success("Kaynakçadaki tüm eserler metinde kullanılmış.")
 
         # Excel Raporu
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df_missing_in_ref.to_excel(writer, sheet_name='Metinden Kaynakçaya', index=False)
-            df_unused_refs.to_excel(writer, sheet_name='Kaynakçadan Metne', index=False)
-        st.download_button("📥 Tam Denetim Raporunu İndir (Excel)", output.getvalue(), "denetim_sonucu.xlsx")
+            df_missing_in_ref.to_excel(writer, sheet_name='Eksik Kaynaklar', index=False)
+            df_unused_refs.to_excel(writer, sheet_name='Atıfı Olmayanlar', index=False)
+        
+        st.divider()
+        st.download_button("📥 Detaylı Hata Raporunu İndir", output.getvalue(), "denetim_raporu.xlsx")
 
     else:
-        st.error("Kaynakça başlığı bulunamadı. Lütfen PDF'de 'References' veya 'Kaynakça' başlığı olduğundan emin olun.")
+        st.error("Kaynakça başlığı (References/Kaynakça) bulunamadı.")
