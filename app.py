@@ -1,119 +1,125 @@
 import streamlit as st
 import pandas as pd
 import re
-import fitz
+import fitz # PyMuPDF
 import io
 
 st.set_page_config(page_title="Akademik Denetçi Pro", layout="wide")
 
-st.title("🔍 Profesyonel Atıf Denetçisi (Kesin Sonuç)")
-st.markdown("Bu sürüm, kaynakçadaki eserleri **sadece metin gövdesinde** arar. Kaynakçanın kendisini tarama dışı bırakır.")
+st.title("🔍 Kesin Sonuçlu Atıf Denetçisi")
+st.markdown("Bu sürüm, kaynakçadaki eserleri **sadece metin gövdesinde** arar ve yıl uyuşmazlıklarını denetler.")
 
-KARA_LISTE = ["march", "april", "university", "journal", "retrieved", "from", "doi", "http", "https", "pdf", "page", "january", "proceedings", "conference"]
+# Gereksiz kelimeleri filtrele
+KARA_LISTE = ["university", "journal", "retrieved", "from", "doi", "http", "https", "page", "proceedings"]
 
 uploaded_file = st.file_uploader("PDF Dosyanızı Yükleyin", type="pdf")
 
 if uploaded_file:
-    with st.spinner('Dosya analiz ediliyor...'):
+    with st.spinner('Dosya derinlemesine analiz ediliyor...'):
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         full_text = ""
         for page in doc:
             full_text += page.get_text("text") + " \n "
         doc.close()
         
-        # Metin normalizasyonu (Gereksiz boşlukları ve satır sonu kaymalarını temizler)
-        full_text = re.sub(r'\s+', ' ', full_text)
+        # Metni temizle ama yapıyı bozma
+        full_text = re.sub(r'[ \t]+', ' ', full_text)
 
-    # 1. Kaynakça Bölümünü Tespit Et ve Böl
-    # 'References' veya 'Kaynakça' kelimesinin en son geçtiği yeri bul (İçindekiler kısmıyla karışmaması için)
-    ref_keywords = [r'\bReferences\b', r'\bKaynakça\b', r'\bKAYNAKÇA\b']
-    split_index = -1
-    for kw in ref_keywords:
-        matches = list(re.finditer(kw, full_text, re.IGNORECASE))
+    # 1. ADIM: METİN VE KAYNAKÇAYI BİRBİRİNDEN AYIR
+    # Kaynakça genellikle dosyanın sonundadır. En sondaki 'References' başlığını bul.
+    ref_basliklari = [r'\n\s*References\s*\n', r'\n\s*Kaynakça\s*\n', r'\n\s*KAYNAKÇA\s*\n']
+    split_point = -1
+    
+    for pattern in ref_basliklari:
+        matches = list(re.finditer(pattern, full_text, re.IGNORECASE))
         if matches:
-            # En sondaki 'References' başlığını al
-            split_index = matches[-1].start()
+            split_point = matches[-1].start()
             break
-
-    if split_index != -1:
-        # --- KRİTİK AYRIM ---
-        body_text = full_text[:split_index]  # Sadece metin (Arama burada yapılacak)
-        raw_ref_section = full_text[split_index:] # Sadece kaynakça listesi
-        
-        # Kaynakçayı bloklara ayır (Yazar, A. (Yıl) formatına göre)
-        # Bu pattern 'Soyadı, A.' veya 'Soyadı, A. B.' şeklinde başlayan satırları yakalar
-        ref_pattern = r'(?<=\.\s)(?=[A-ZÇĞİÖŞÜ][a-zçğıöşü]+,?\s+[A-Z]\.)'
-        ref_blocks = [b.strip() for b in re.split(ref_pattern, raw_ref_section) if len(b.strip()) > 20]
-
-        # --- ANALİZ 1: METİNDE VAR, KAYNAKÇADA YOK ---
-        found_in_body = []
-        # (Yazar, 2020) veya Yazar (2020)
-        matches = re.findall(r'([A-ZÇĞİÖŞÜ][a-zA-ZçğıöşüÇĞİÖŞÜ]+(?:\s+et\s+al\.)?)\s*\((\d{4}[a-z]?)\)', body_text)
-        for auth, yr in matches:
-            found_in_body.append({"auth": auth.strip(), "year": yr, "full": f"{auth} ({yr})"})
-
-        missing_in_ref = []
-        for cit in found_in_body:
-            author_key = cit["auth"].split()[0].replace(',', '').lower()
-            if any(word in author_key for word in KARA_LISTE): continue
             
-            # Kaynakça blokları içinde bu yazar ve yılı ara
-            is_in_ref = any(author_key in block.lower() and cit["year"] in block for block in ref_blocks)
-            if not is_in_ref:
-                missing_in_ref.append({"Metindeki Atıf": cit["full"]})
+    if split_point == -1:
+        # Eğer özel başlık bulunamazsa 'References' kelimesinin geçtiği son yeri bul
+        split_point = full_text.lower().rfind("references")
 
-        df_missing_in_ref = pd.DataFrame(missing_in_ref).drop_duplicates()
+    if split_point != -1:
+        body_text = full_text[:split_point]  # SADECE BURADA ARAMA YAPACAĞIZ
+        ref_section = full_text[split_point:] # BURADAN KAYNAKLARI ÇEKECEĞİZ
 
-        # --- ANALİZ 2: KAYNAKÇADA VAR, METİNDE YOK (Sizin sildiğiniz kaynaklar burada çıkacak) ---
-        unused_refs = []
+        # 2. ADIM: KAYNAKÇADAKİ ESERLERİ AYIKLA
+        # APA formatındaki 'Soyadı, A. (Yıl)' yapısını baz alır
+        ref_blocks = re.split(r'\n(?=[A-ZÇĞİÖŞÜ][a-zçğıöşü]+,?\s+[A-Z]\.)', ref_section)
+        ref_blocks = [b.strip() for b in ref_blocks if len(b.strip()) > 15]
+
+        missing_in_body = [] # Kaynakçada var, metinde yok
+        wrong_year = []      # Yıl uyuşmazlığı
+
         for block in ref_blocks:
-            # Bloğun başındaki Soyadı ve ilk yılı çek
-            author_match = re.search(r'^([A-ZÇĞİÖŞÜ][a-zçğıöşü]+)', block)
-            year_match = re.search(r'(\d{4})', block)
+            # Bloktan soyadı ve yılı çek (Örn: Hyland, 2005)
+            auth_match = re.search(r'^([A-ZÇĞİÖŞÜ][a-zçğıöşü]+)', block)
+            year_match = re.search(r'\((\d{4})\)', block) or re.search(r'\s(\d{4})[.,]', block)
             
-            if author_match and year_match:
-                author_surname = author_match.group(1)
-                ref_year = year_match.group(1)
+            if auth_match and year_match:
+                soyad = auth_match.group(1)
+                yil = year_match.group(1)
                 
-                # ÖNEMLİ: Sadece body_text (metin gövdesi) içinde yazar ve yılı yan yana ara
-                # Regex: Yazar isminden sonra makul bir mesafede yıl gelmeli
-                check_pattern = rf"{author_surname}.*?{ref_year}|{ref_year}.*?{author_surname}"
-                is_cited = re.search(check_pattern, body_text, re.IGNORECASE)
+                # ÖNEMLİ: Soyadı body_text içinde ara (büyük/küçük harf duyarsız)
+                # \b (word boundary) kullanarak 'Swales' ararken 'Sweller' içinde bulmasını engelle
+                found_auth = re.search(rf"\b{soyad}\b", body_text, re.IGNORECASE)
                 
-                if not is_cited:
-                    unused_refs.append({"Metinde Atıfı Bulunmayan Kaynak": block[:120] + "..."})
+                if not found_auth:
+                    missing_in_body.append({"Eser": f"{soyad} ({yil})", "Hata": "Metinde hiç atıf yok"})
+                else:
+                    # Soyadı var, peki o yılla mı atıf yapılmış?
+                    # Örn: Metinde Zhai (2022) var, kaynakçada Zhai (2023)
+                    year_in_body = re.search(rf"{soyad}.*?(\d{{4}})", body_text, re.IGNORECASE | re.DOTALL)
+                    if year_in_body:
+                        metindeki_yil = year_in_body.group(1)
+                        if metindeki_yil != yil:
+                            wrong_year.append({
+                                "Yazar": soyadı,
+                                "Kaynakçadaki Yıl": yil,
+                                "Metindeki Yıl": metindeki_yil,
+                                "Durum": "❌ Yıl Uyuşmazlığı"
+                            })
 
-        df_unused_refs = pd.DataFrame(unused_refs)
+        # 3. ADIM: METİNDE VAR, KAYNAKÇADA YOK (Biggs & Tang vb.)
+        missing_in_ref = []
+        body_citations = re.findall(r'([A-ZÇĞİÖŞÜ][a-zA-ZçğıöşüÇĞİÖŞÜ& ]+)\s*\((\d{4})\)', body_text)
+        
+        for b_auth, b_year in body_citations:
+            b_soyad = b_auth.strip().split()[0].replace(',', '')
+            if any(word in b_soyad.lower() for word in KARA_LISTE) or len(b_soyad) < 3:
+                continue
+            
+            is_in_ref = any(b_soyad.lower() in r_block.lower() and b_year in r_block for r_block in ref_blocks)
+            if not is_in_ref:
+                missing_in_ref.append({"Metindeki Atıf": f"{b_auth.strip()} ({b_year})", "Durum": "❌ Kaynakçada Yok"})
 
-        # --- GÖRSELLEŞTİRME ---
-        col1, col2 = st.columns(2)
+        # --- SONUÇLARI GÖSTER ---
+        c1, c2 = st.columns(2)
+        
+        with c1:
+            st.subheader("🚩 Metinde Atıfı Olmayanlar")
+            df_m_body = pd.DataFrame(missing_in_body).drop_duplicates()
+            if not df_m_body.empty:
+                st.warning(f"{len(df_m_body)} kaynak sildiğiniz için veya unutulduğu için metinde bulunamadı.")
+                st.table(df_m_body)
+            else:
+                st.success("Tüm kaynaklar metinde kullanılmış.")
 
-        with col1:
-            st.subheader("❌ Kaynakçada Olmayan Atıflar")
-            if not df_missing_in_ref.empty:
-                st.error(f"{len(df_missing_in_ref)} atıf kaynakçada bulunamadı.")
-                st.table(df_missing_in_ref)
+        with c2:
+            st.subheader("❌ Kaynakçada Olmayanlar")
+            df_m_ref = pd.DataFrame(missing_in_ref).drop_duplicates()
+            if not df_m_ref.empty:
+                st.error("Metinde atıf yapılmış ama kaynakça listesine eklenmemiş:")
+                st.table(df_m_ref)
             else:
                 st.success("Tüm atıflar kaynakçada mevcut.")
 
-        with col2:
-            st.subheader("⚠️ Metinde Atıfı Olmayanlar")
-            if not df_unused_refs.empty:
-                st.warning(f"{len(df_unused_refs)} kaynak metinde hiç geçmiyor.")
-                st.table(df_unused_refs)
-            else:
-                st.success("Kaynakçadaki tüm eserlere atıf yapılmış.")
-
-        # Excel Raporu
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            if not df_missing_in_ref.empty:
-                df_missing_in_ref.to_excel(writer, sheet_name='Eksik Kaynaklar', index=False)
-            if not df_unused_refs.empty:
-                df_unused_refs.to_excel(writer, sheet_name='Metinde Atıfı Yok', index=False)
-        
-        st.divider()
-        st.download_button("📥 Hata Raporunu İndir", output.getvalue(), "denetim_raporu.xlsx")
+        if wrong_year:
+            st.divider()
+            st.subheader("📅 Yıl Yanlışları")
+            st.info("Aşağıdaki yazarların metindeki yılı ile kaynakçadaki yılı birbirinden farklı.")
+            st.table(pd.DataFrame(wrong_year).drop_duplicates())
 
     else:
-        st.error("Kaynakça/References başlığı bulunamadı.")
+        st.error("Dosyada 'References' veya 'Kaynakça' başlığı tespit edilemedi.")
