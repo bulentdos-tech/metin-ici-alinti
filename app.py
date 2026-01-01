@@ -6,12 +6,11 @@ import io
 
 st.set_page_config(page_title="Akademik Denetçi Pro", layout="wide")
 
-st.title("🔍 Profesyonel Atıf & Kaynakça Denetçisi")
-st.markdown("Park (2020) ve benzeri karmaşık kaynakça yapıları için optimize edilmiş sürüm.")
+st.title("🔍 Kesinleştirilmiş Atıf Denetçisi")
+st.markdown("Hatalar giderildi: 'Fixed-width pattern' sorunu çözüldü ve kaynakça ayrıştırması iyileştirildi.")
 
-# Kara listeyi daralttık ve sadece kesinlikle yazar olmayacak kelimelere odaklandık
 KARA_LISTE = ["march", "april", "may", "june", "july", "august", "september", "october", "november", "december",
-              "india", "korea", "seoul", "china", "university", "journal", "cureus", "table", "figure"]
+              "india", "korea", "seoul", "china", "university", "journal", "cureus", "table", "figure", "source"]
 
 uploaded_file = st.file_uploader("PDF Dosyanızı Yükleyin", type="pdf")
 
@@ -21,13 +20,13 @@ if uploaded_file:
         full_text = ""
         for page in doc:
             text = page.get_text("text")
-            # Satır sonlarını boşluk yap ama metni tek parça tut
+            # Satır sonlarını temizleyerek Bogoch gibi kaymaları önle
             text = text.replace('\n', ' ')
             full_text += text + " "
         doc.close()
         full_text = re.sub(r'\s+', ' ', full_text)
 
-    # 1. Kaynakça Bölümünü Ayır
+    # 1. Kaynakça Bölümünü Tespit Et
     ref_keywords = [r'\bReferences\b', r'\bKaynakça\b', r'\bKAYNAKÇA\b']
     split_index = -1
     for kw in ref_keywords:
@@ -40,46 +39,49 @@ if uploaded_file:
         body_text = full_text[:split_index]
         raw_ref_section = full_text[split_index:]
         
-        # --- KAYNAKÇA PARÇALAMA (Park 2020 örneğine özel) ---
-        # Maddeleri sadece "Yıl + Nokta" kombinasyonuna göre değil, 
-        # yazar dizilimlerini bozmadan daha geniş bloklar halinde ayırıyoruz.
-        # Bu regex, bir sonraki yazarın büyük olasılıkla başladığı yeri tahmin eder.
-        ref_blocks = re.split(r'(?<=\d{4}[a-z]?\.)\s+(?=[A-ZÇĞİÖŞÜ][a-zçğıöşü]+)', raw_ref_section)
-        ref_blocks = [b.strip() for b in ref_blocks if len(b.strip()) > 30]
+        # --- KAYNAKÇA PARÇALAMA (Hatasız Yeni Mantık) ---
+        # Look-behind hatasını önlemek için deseni basitleştirdik.
+        # Her bir kaynağı "Yıl ve Nokta" sonrasından bölüyoruz.
+        # Örn: "2020." veya "2020a."
+        ref_blocks = re.split(r'(\d{4}[a-z]?\.)', raw_ref_section)
+        
+        # Parçaları birleştir (Regex split yapınca yılı ayırır, onları geri ekleyelim)
+        final_refs = []
+        for i in range(1, len(ref_blocks), 2):
+            combined = ref_blocks[i-1] + ref_blocks[i]
+            # Eğer bir sonraki parça varsa onu da ekle (bir sonraki yıla kadar olan metin)
+            if i+1 < len(ref_blocks):
+                combined += ref_blocks[i+1]
+            final_refs.append(combined.strip())
 
         # 2. Atıf Ayıklama
         found_raw = []
-        # Parantez içi
         paren_groups = re.findall(r'\(([^)]+\d{4}[a-z]?)\)', body_text)
         for group in paren_groups:
             for sub in group.split(';'):
                 found_raw.append(sub.strip())
         
-        # Metin içi
         inline_matches = re.finditer(r'([A-ZÇĞİÖŞÜ][a-zçğıöşü]+(?:\s+et\s+al\.)?)\s*\((\d{4}[a-z]?)\)', body_text)
         for m in inline_matches:
             found_raw.append(f"{m.group(1)} ({m.group(2)})")
 
         results = []
         for item in found_raw:
-            # Filtreleme
             if any(word in item.lower() for word in KARA_LISTE): continue
             
             year_match = re.search(r'\d{4}', item)
             if not year_match: continue
             year = year_match.group()
             
-            # Yazarları yakala (Sadece kelime başındaki ana ismi al)
             authors = re.findall(r'[A-ZÇĞİÖŞÜ][a-zçğıöşü]+', item)
             authors = [a for a in authors if a.lower() not in KARA_LISTE and len(a) > 2]
             
             if authors:
                 matched_full_ref = "❌ KAYNAKÇADA BULUNAMADI"
                 is_found = False
-                
-                # Kaynakçada Park, Ahmed, Bogoch gibi ana soyadlarını ara
                 main_author = authors[0]
-                for block in ref_blocks:
+                
+                for block in final_refs:
                     if main_author.lower() in block.lower() and year in block:
                         matched_full_ref = block
                         is_found = True
@@ -95,20 +97,18 @@ if uploaded_file:
 
         df_res = pd.DataFrame(results).drop_duplicates(subset=['Metindeki Atıf'])
 
-        # 3. Sonuçlar
-        st.subheader("📊 Atıf Doğrulama Raporu")
+        # 3. Sonuçlar ve Excel
+        st.subheader("📊 Atıf Doğrulama Sonuçları")
         st.dataframe(df_res, use_container_width=True)
         
-        # Excel
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df_res.to_excel(writer, index=False)
-        st.download_button("📥 Excel Raporunu İndir", output.getvalue(), "akademik_denetim.xlsx")
+        st.download_button("📥 Excel Raporunu İndir", output.getvalue(), "akademik_rapor.xlsx")
 
-        # 4. Kaynakça Maddeleri (Denetim için)
         st.divider()
-        st.subheader("📚 Ayıklanan Kaynakça Maddeleri (Tam Metin)")
-        for b in ref_blocks:
-            st.success(b)
+        st.subheader("📚 PDF'den Ayıklanan Kaynakça (Önizleme)")
+        for r in final_refs:
+            if len(r) > 50: st.info(r)
     else:
         st.error("Kaynakça başlığı bulunamadı.")
