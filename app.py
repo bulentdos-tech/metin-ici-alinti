@@ -4,320 +4,87 @@ import re
 import fitz
 
 st.set_page_config(page_title="Akademik Denetçi Pro", layout="wide")
-st.title("🔍 Çift Yönlü Atıf Denetçisi")
-st.info("Bu sürüm hem metindeki atıfları kaynakçada, hem de kaynakçadaki kaynakları metinde kontrol eder.")
+st.title("🔍 Profesyonel Atıf & Kaynakça Denetçisi")
 
-uploaded_file = st.file_uploader("PDF Dosyanızı Yükleyin", type="pdf")
+uploaded_file = st.file_uploader("PDF Dosyasını Yükleyin", type="pdf")
+
+def metin_temizle(text):
+    # PDF'deki gizli karakterleri, satır sonlarını ve tirelemeleri temizler
+    text = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', text)
+    return " ".join(text.split())
 
 if uploaded_file:
-    with st.spinner('Çift yönlü analiz yapılıyor...'):
+    with st.spinner('Dosya analiz ediliyor...'):
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         full_text = ""
         for page in doc:
-            full_text += page.get_text("text") + " "
+            full_text += page.get_text("text") + "\n"
         doc.close()
         
-        full_text = re.sub(r'\s+', ' ', full_text)
-        
-        # KAYNAKÇA BÖLÜMÜNÜ TESPİT ET
-        ref_header = list(re.finditer(r'\b(References|Kaynakça|KAYNAKÇA|REFERENCES)\b', full_text, re.IGNORECASE))
-        
-        if ref_header:
-            split_idx = ref_header[-1].start()
-            body_text = full_text[:split_idx]
-            ref_section = full_text[split_idx:]
+        full_text = metin_temizle(full_text)
+
+    # 1. KAYNAKÇA AYIRIMI (En sondaki References'tan kes)
+    ref_matches = list(re.finditer(r'\b(References|Kaynakça|KAYNAKÇA)\b', full_text, re.IGNORECASE))
+    
+    if ref_matches:
+        split_point = ref_matches[-1].start()
+        body_text = full_text[:split_point]
+        ref_section = full_text[split_point:]
+
+        # 2. KAYNAKÇADAKİ ESERLERİ AYIKLA (APA Formatı)
+        # Örn: Hyland, K. (2005). ...
+        ref_entries = re.findall(r'([A-ZÇĞİÖŞÜ][a-zçğıöşü]+),\s+[A-Z]\..*?\((\d{4})\)', ref_section)
+
+        # 3. METİN İÇİ ATIFLARI AYIKLA
+        # Örn: Zimmerman (2002) veya (Zhai, 2023)
+        body_cites = re.findall(r'([A-ZÇĞİÖŞÜ][a-zA-ZçğıöşüÇĞİÖŞÜ& ]+(?:\s+et\s+al\.)?)\s*\((\d{4}[a-z]?)\)', body_text)
+
+        errors = []
+
+        # --- DENETİM 1: KAYNAKÇADA VAR, METİNDE YOK (Sizin sildikleriniz) ---
+        for r_auth, r_year in ref_entries:
+            # Metin içinde bu soyadı ve yılı ara (Çok esnek: Arada 50 karakter olsa da bulur)
+            # Bu sayede "Zimmerman" ve "(2002)" arasındaki boşluklar sorun olmaz.
+            found_in_body = re.search(rf"{r_auth}.{{0,50}}{r_year}", body_text, re.IGNORECASE | re.DOTALL)
             
-            # KARA LİSTE
-            blacklist = ["table", "figure", "appendix", "chatgpt", "ai", "university", "page", 
-                        "vol", "journal", "retrieved", "doi", "http", "https", "editor", "eds"]
-            
-            # ========================================
-            # BÖLÜM 1: METİNDEKİ ATIFLARI KONTROL ET
-            # ========================================
-            
-            missing_in_refs = []
-            year_mismatches = []
-            
-            # METİNDEKİ ATIFLARI YAKALA
-            single_cites = re.findall(r'\b([A-ZÇĞİÖŞÜ][a-zA-ZçğıöşüÇĞİÖŞÜ]+)\s*\((\d{4}[a-z]?)\)', body_text)
-            double_cites = re.findall(
-                r'\b([A-ZÇĞİÖŞÜ][a-zA-ZçğıöşüÇĞİÖŞÜ]+)\s+(?:&|and)\s+([A-ZÇĞİÖŞÜ][a-zA-ZçğıöşüÇĞİÖŞÜ]+)\s*\((\d{4}[a-z]?)\)', 
-                body_text
-            )
-            etal_cites = re.findall(
-                r'\b([A-ZÇĞİÖŞÜ][a-zA-ZçğıöşüÇĞİÖŞÜ]+)\s+et\s+al\.?\s*\((\d{4}[a-z]?)\)', 
-                body_text, re.IGNORECASE
-            )
-            paren_single = re.findall(r'\(([A-ZÇĞİÖŞÜ][a-zA-ZçğıöşüÇĞİÖŞÜ]+),\s*(\d{4}[a-z]?)\)', body_text)
-            paren_double = re.findall(
-                r'\(([A-ZÇĞİÖŞÜ][a-zA-ZçğıöşüÇĞİÖŞÜ]+)\s+(?:&|and)\s+([A-ZÇĞİÖŞÜ][a-zA-ZçğıöşüÇĞİÖŞÜ]+),\s*(\d{4}[a-z]?)\)', 
-                body_text
-            )
-            paren_etal = re.findall(
-                r'\(([A-ZÇĞİÖŞÜ][a-zA-ZçğıöşüÇĞİÖŞÜ]+)\s+et\s+al\.?,\s*(\d{4}[a-z]?)\)', 
-                body_text, re.IGNORECASE
-            )
-            
-            all_citations_in_text = set()
-            
-            # TEK YAZAR
-            for author, year in single_cites + paren_single:
-                if author.lower() in blacklist:
-                    continue
-                    
-                citation_key = f"{author}|{year}"
-                if citation_key in all_citations_in_text:
-                    continue
-                all_citations_in_text.add(citation_key)
-                
-                year_base = re.sub(r'[a-z]$', '', year)
-                
-                # Kaynakçada ara
-                found = False
-                found_year = None
-                
-                pattern = rf'\b{author}\b.*?\((\d{{4}}[a-z]?)\)'
-                matches = re.finditer(pattern, ref_section, re.IGNORECASE | re.DOTALL)
-                
-                for match in matches:
-                    found_year = match.group(1)
-                    year_in_ref = re.sub(r'[a-z]$', '', found_year)
-                    if year_base == year_in_ref:
-                        found = True
-                        break
-                
-                if not found:
-                    if found_year:
-                        year_mismatches.append({
-                            "Yazar": author,
-                            "Metinde": year,
-                            "Kaynakçada": found_year
-                        })
-                    else:
-                        missing_in_refs.append({
-                            "Metindeki Atıf": f"{author} ({year})",
-                            "Durum": "❌ Kaynakçada Yok"
-                        })
-            
-            # ÇİFT YAZAR
-            for match in double_cites + paren_double:
-                if len(match) == 3:
-                    auth1, auth2, year = match
-                else:
-                    continue
-                    
-                if auth1.lower() in blacklist or auth2.lower() in blacklist:
-                    continue
-                
-                citation_key = f"{auth1}&{auth2}|{year}"
-                if citation_key in all_citations_in_text:
-                    continue
-                all_citations_in_text.add(citation_key)
-                
-                year_base = re.sub(r'[a-z]$', '', year)
-                
-                # Her iki yazar da kaynakçada olmalı
-                found = False
-                found_year = None
-                
-                pattern = rf'\b{auth1}\b.*?\b{auth2}\b.*?\((\d{{4}}[a-z]?)\)|\b{auth2}\b.*?\b{auth1}\b.*?\((\d{{4}}[a-z]?)\)'
-                matches = re.finditer(pattern, ref_section, re.IGNORECASE | re.DOTALL)
-                
-                for match in matches:
-                    found_year = match.group(1) or match.group(2)
-                    if found_year:
-                        year_in_ref = re.sub(r'[a-z]$', '', found_year)
-                        if year_base == year_in_ref:
-                            found = True
-                            break
-                
-                if not found:
-                    if found_year:
-                        year_mismatches.append({
-                            "Yazar": f"{auth1} & {auth2}",
-                            "Metinde": year,
-                            "Kaynakçada": found_year
-                        })
-                    else:
-                        missing_in_refs.append({
-                            "Metindeki Atıf": f"{auth1} & {auth2} ({year})",
-                            "Durum": "❌ Kaynakçada Yok"
-                        })
-            
-            # ET AL.
-            for author, year in etal_cites + paren_etal:
-                if author.lower() in blacklist:
-                    continue
-                
-                citation_key = f"{author}_etal|{year}"
-                if citation_key in all_citations_in_text:
-                    continue
-                all_citations_in_text.add(citation_key)
-                
-                year_base = re.sub(r'[a-z]$', '', year)
-                
-                found = False
-                found_year = None
-                
-                pattern = rf'\b{author}\b.*?\((\d{{4}}[a-z]?)\)'
-                matches = re.finditer(pattern, ref_section, re.IGNORECASE | re.DOTALL)
-                
-                for match in matches:
-                    found_year = match.group(1)
-                    year_in_ref = re.sub(r'[a-z]$', '', found_year)
-                    if year_base == year_in_ref:
-                        found = True
-                        break
-                
-                if not found:
-                    if found_year:
-                        year_mismatches.append({
-                            "Yazar": f"{author} et al.",
-                            "Metinde": year,
-                            "Kaynakçada": found_year
-                        })
-                    else:
-                        missing_in_refs.append({
-                            "Metindeki Atıf": f"{author} et al. ({year})",
-                            "Durum": "❌ Kaynakçada Yok"
-                        })
-            
-            # ========================================
-            # BÖLÜM 2: KAYNAKÇADAKİ ESERLERİ KONTROL ET
-            # ========================================
-            
-            missing_in_body = []
-            
-            # Kaynakçadaki her satırı parse et (APA formatı)
-            ref_entries = re.split(r'\n(?=[A-ZÇĞİÖŞÜ][a-zçğıöşü]+,?\s+[A-Z]\.)', ref_section)
-            ref_entries = [r.strip() for r in ref_entries if len(r.strip()) > 20]
-            
-            for ref_entry in ref_entries:
-                # İlk yazarı çıkar
-                first_author = re.search(r'^([A-ZÇĞİÖŞÜ][a-zçğıöşü]+)', ref_entry)
-                if not first_author:
-                    continue
-                
-                author_surname = first_author.group(1)
-                
-                # Yılı çıkar
-                year_in_ref = re.search(r'\((\d{4}[a-z]?)\)', ref_entry)
-                if not year_in_ref:
-                    continue
-                
-                ref_year = year_in_ref.group(1)
-                
-                # Kara listede mi?
-                if author_surname.lower() in blacklist:
-                    continue
-                
-                # Diğer yazarları da çıkar (et al. durumu için)
-                all_authors_in_ref = re.findall(r'([A-ZÇĞİÖŞÜ][a-zçğıöşü]+),\s+[A-Z]\.', ref_entry)
-                
-                # Metinde bu kaynak geçiyor mu?
-                found_in_body = False
-                
-                # 1. İlk yazarı tek başına ara
-                if re.search(rf'\b{author_surname}\b.*?\({ref_year}\)|\({author_surname}.*?{ref_year}\)', 
-                            body_text, re.IGNORECASE):
-                    found_in_body = True
-                
-                # 2. Et al. formatında ara
-                if not found_in_body:
-                    if re.search(rf'\b{author_surname}\s+et\s+al\.?\s*\({ref_year}\)', 
-                                body_text, re.IGNORECASE):
-                        found_in_body = True
-                
-                # 3. Çok yazarlı ise diğer yazarlarla birlikte ara
-                if not found_in_body and len(all_authors_in_ref) > 1:
-                    for second_author in all_authors_in_ref[1:2]:  # İkinci yazarı kontrol et
-                        if re.search(rf'\b{author_surname}\b.*?\b{second_author}\b.*?\({ref_year}\)', 
-                                    body_text, re.IGNORECASE):
-                            found_in_body = True
-                            break
-                
-                if not found_in_body:
-                    # Kaynakçada var ama metinde yok
-                    author_display = author_surname
-                    if len(all_authors_in_ref) > 1:
-                        author_display += " et al."
-                    
-                    missing_in_body.append({
-                        "Kaynakçadaki Eser": f"{author_display} ({ref_year})",
-                        "Durum": "🚩 Metinde Atıf Yok"
+            if not found_in_body:
+                # Özel durum: Yazar var ama yılı mı farklı? (Zhai Testi)
+                wrong_year_match = re.search(rf"{r_auth}.*?(\d{{4}})", body_text, re.IGNORECASE)
+                if wrong_year_match:
+                    errors.append({
+                        "Eser": r_auth,
+                        "Hata Türü": "📅 Yıl Uyuşmazlığı",
+                        "Detay": f"Kaynakçada: {r_year} | Metinde: {wrong_year_match.group(1)}"
                     })
-            
-            # ========================================
-            # SONUÇLARI GÖSTER
-            # ========================================
-            
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.subheader("❌ Kaynakçada Olmayan")
-                if missing_in_refs:
-                    df_missing = pd.DataFrame(missing_in_refs).drop_duplicates()
-                    st.error(f"⚠️ {len(df_missing)} atıf eksik:")
-                    st.dataframe(df_missing, use_container_width=True, hide_index=True)
-                    
-                    csv1 = df_missing.to_csv(index=False).encode('utf-8-sig')
-                    st.download_button(
-                        "📥 İndir",
-                        csv1,
-                        "kaynakcada_yok.csv",
-                        "text/csv",
-                        key="btn1"
-                    )
                 else:
-                    st.success("✅ Hepsi kaynakçada")
+                    errors.append({
+                        "Eser": f"{r_auth} ({r_year})",
+                        "Hata Türü": "⚠️ Metinde Atıfı Yok",
+                        "Detay": "Bu kaynak listede duruyor ancak metinden sildiğiniz için bulunamadı."
+                    })
+
+        # --- DENETİM 2: METİNDE VAR, KAYNAKÇADA YOK (Unutulanlar) ---
+        for b_auth, b_year in body_cites:
+            b_clean = b_auth.replace(" et al.", "").replace("&", " ").split()[0].strip()
+            if b_clean.lower() in ["table", "figure", "appendix", "chatgpt"]: continue
             
-            with col2:
-                st.subheader("🚩 Metinde Olmayan")
-                if missing_in_body:
-                    df_body = pd.DataFrame(missing_in_body).drop_duplicates()
-                    st.warning(f"⚠️ {len(df_body)} kaynak kullanılmamış:")
-                    st.dataframe(df_body, use_container_width=True, hide_index=True)
-                    
-                    csv2 = df_body.to_csv(index=False).encode('utf-8-sig')
-                    st.download_button(
-                        "📥 İndir",
-                        csv2,
-                        "metinde_yok.csv",
-                        "text/csv",
-                        key="btn2"
-                    )
-                else:
-                    st.success("✅ Hepsi kullanılmış")
-            
-            with col3:
-                st.subheader("📅 Yıl Hataları")
-                if year_mismatches:
-                    df_years = pd.DataFrame(year_mismatches).drop_duplicates()
-                    st.error(f"⚠️ {len(df_years)} yıl uyuşmazlığı:")
-                    st.dataframe(df_years, use_container_width=True, hide_index=True)
-                    
-                    csv3 = df_years.to_csv(index=False).encode('utf-8-sig')
-                    st.download_button(
-                        "📥 İndir",
-                        csv3,
-                        "yil_hatalari.csv",
-                        "text/csv",
-                        key="btn3"
-                    )
-                else:
-                    st.success("✅ Tüm yıllar doğru")
-            
-            # İSTATİSTİKLER
-            st.divider()
-            col_a, col_b, col_c, col_d = st.columns(4)
-            with col_a:
-                st.metric("📝 Metindeki Atıf", len(all_citations_in_text))
-            with col_b:
-                st.metric("📚 Kaynakçadaki Eser", len(ref_entries))
-            with col_c:
-                st.metric("❌ Kaynakçada Yok", len(missing_in_refs))
-            with col_d:
-                st.metric("🚩 Metinde Yok", len(missing_in_body))
-                
+            # Kaynakça bloğu içinde bu soyadı ve yılı ara
+            found_in_ref = re.search(rf"{b_clean}.*?{b_year}", ref_section, re.IGNORECASE | re.DOTALL)
+            if not found_in_ref:
+                errors.append({
+                    "Eser": f"{b_auth} ({b_year})",
+                    "Hata Türü": "❌ Kaynakçada Kaydı Yok",
+                    "Detay": "Metinde atıfı var ama kaynakça listesine eklenmemiş."
+                })
+
+        # SONUÇLARI GÖSTER
+        st.divider()
+        df_errors = pd.DataFrame(errors).drop_duplicates()
+        
+        if not df_errors.empty:
+            st.error(f"🔍 Toplam {len(df_errors)} adet tutarsızlık bulundu:")
+            st.table(df_errors)
         else:
-            st.warning("Dosyada 'References' veya 'Kaynakça' başlığı bulunamadı.")
+            st.success("✅ Tebrikler! Metin ve Kaynakça %100 uyumlu.")
+    else:
+        st.warning("Kaynakça (References) bölümü tespit edilemedi.")
