@@ -13,20 +13,20 @@ if uploaded_file:
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         
         # 1. ADIM: SAYFA TABANLI BÖLME
-        # deneme6.pdf'te kaynakça 15. sayfada başlar.
-        # İlk 14 sayfayı metin, 15 ve sonrasını kaynakça kabul ediyoruz.
+        # deneme6.pdf dosyasında kaynakça 15. sayfada başlıyor.
+        # Bu yüzden ilk 14 sayfayı 'Metin', sonrasını 'Kaynakça' olarak ayırıyoruz.
         body_text = ""
         ref_text = ""
         
         for i, page in enumerate(doc):
             text = page.get_text("text")
-            if i < 14:  # 0'dan başladığı için 14. index 15. sayfadır
+            if i < 14:  # 15. sayfadan öncesi (0-indexed olduğu için 14)
                 body_text += text + " "
             else:
                 ref_text += text + " "
         doc.close()
 
-        # Temizlik: Fazla boşlukları ve satır sonlarını normalize et
+        # Temizlik
         body_text = re.sub(r'\s+', ' ', body_text)
         ref_text = re.sub(r'\s+', ' ', ref_text)
 
@@ -40,43 +40,35 @@ if uploaded_file:
 
         # --- ANALİZ MANTIĞI ---
 
-        # A) KAYNAKÇADA VAR, METİNDE YOK (Sildiğiniz veya unuttuğunuz atıflar)
+        # HATA A: KAYNAKÇADA VAR, METİNDE YOK (Sildiğiniz Hyland, Perkins, Swales vb.)
         for r_auth, r_year in ref_list:
-            # Metinde bu soyadı ve yılı içeren bir atıf var mı?
             found = any(r_auth.lower() in b_auth.lower() and r_year == b_year for b_auth, b_year in body_cites)
             
             if not found:
-                # Zhai örneği gibi: İsim var ama yıl mı farklı?
-                is_year_wrong = any(r_auth.lower() in b_auth.lower() for b_auth, b_year in body_cites)
+                # Zhai hatası gibi: İsim var ama yıl mı yanlış?
+                is_name_there = any(r_auth.lower() in b_auth.lower() for b_auth, b_year in body_cites)
                 
-                if is_year_wrong:
-                    # Metindeki mevcut yılı bul
-                    m_year = "Belirsiz"
-                    for b_auth, b_year in body_cites:
-                        if r_auth.lower() in b_auth.lower():
-                            m_year = b_year
-                            break
+                if is_name_there:
+                    # Metindeki o yanlış yılı bulalım
+                    metin_yili = next((b_year for b_auth, b_year in body_cites if r_auth.lower() in b_auth.lower()), "Bulunamadı")
                     results.append({
                         "Eser": r_auth, 
                         "Hata": "Yıl Uyuşmazlığı", 
-                        "Detay": f"Kaynakça: {r_year} / Metin: {m_year}"
+                        "Detay": f"Kaynakça: {r_year} / Metin: {metin_yili}"
                     })
                 else:
-                    # İsim metinde hiç yoksa (Hyland, Perkins, Swales)
                     results.append({
                         "Eser": f"{r_auth} ({r_year})", 
                         "Hata": "Metinde Atıfı Yok", 
                         "Detay": "Bu kaynak sildiğiniz için veya unutulduğu için metinde bulunamadı."
                     })
 
-        # B) METİNDE VAR, KAYNAKÇADA YOK (Unutulanlar: Biggs & Tang vb.)
+        # HATA B: METİNDE VAR, KAYNAKÇADA YOK (Unutulan Biggs & Tang vb.)
         for b_auth, b_year in body_cites:
-            # Atıftaki ilk soyadı al (Örn: "Biggs & Tang" -> "Biggs")
             b_clean = b_auth.replace(" et al.", "").replace("&", " ").split()[0]
             if len(b_clean) < 3: continue
             
             in_ref = any(b_clean.lower() in r_auth.lower() and b_year == r_year for r_auth, r_year in ref_list)
-            
             if not in_ref:
                 results.append({
                     "Eser": f"{b_auth} ({b_year})", 
@@ -87,7 +79,7 @@ if uploaded_file:
         # --- SONUÇLARI GÖSTER ---
         if results:
             df = pd.DataFrame(results).drop_duplicates(subset=['Eser', 'Hata'])
-            st.error(f"⚠️ Toplam {len(df)} tutarsızlık bulundu:")
+            st.error(f"⚠️ Toplam {len(df)} tutarsızlık tespit edildi:")
             st.table(df)
         else:
             st.success("✅ Harika! Tüm atıflar ve kaynakça listeniz birbiriyle uyumlu.")
