@@ -6,7 +6,7 @@ import fitz
 st.set_page_config(page_title="Akademik Denetçi Stabil", layout="wide")
 
 st.title("🔍 Atıf Denetçisi (Stabil Sürüm)")
-st.info("Bu sürüm sadece metin içinde atıf yapılıp kaynakçaya eklenmeyen eserleri listeler.")
+st.info("Bu sürüm sadece metin içinde atıf yapılıp KAYNAKÇADA UNUTULAN eserleri listeler.")
 
 uploaded_file = st.file_uploader("PDF Dosyanızı Yükleyin", type="pdf")
 
@@ -18,39 +18,50 @@ if uploaded_file:
             full_text += page.get_text("text") + " "
         doc.close()
 
-        # Metni temizle (satır sonlarını ve boşlukları düzelt)
+        # Metni temizle ve tek bir satır haline getir (Gizli karakterleri yok et)
         full_text = re.sub(r'\s+', ' ', full_text)
 
-        # 1. ADIM: KAYNAKÇA BÖLÜMÜNÜ AYIR
-        # 'References' kelimesinin geçtiği yeri bul (Metin içinde atıf aramayı oraya kadar yapacağız)
-        ref_header = re.search(r'\b(References|Kaynakça|KAYNAKÇA)\b', full_text, re.IGNORECASE)
+        # 1. ADIM: KAYNAKÇA BÖLÜMÜNÜ TESPİT ET
+        # En sondaki References/Kaynakça başlığını bulur
+        ref_header = list(re.finditer(r'\b(References|Kaynakça|KAYNAKÇA)\b', full_text, re.IGNORECASE))
         
         if ref_header:
-            body_text = full_text[:ref_header.start()]
-            ref_section = full_text[ref_header.start():]
+            split_idx = ref_header[-1].start()
+            body_text = full_text[:split_idx]
+            ref_section = full_text[split_idx:]
             
-            # 2. ADIM: METİN İÇİNDEKİ TÜM ATIFLARI BUL
-            # Kalıp: (Yazar, 2020) veya Yazar (2020)
-            # Bu regex 'Biggs & Tang (2011)' gibi yapıları da yakalar.
+            # 2. ADIM: METİN İÇİNDEKİ ATIFLARI BUL
+            # (Yazar, 2020) veya Yazar (2020) kalıpları
+            # Bu regex Biggs & Tang gibi yapıları da yakalar
             cites_in_body = re.findall(r'([A-ZÇĞİÖŞÜ][a-zA-ZçğıöşüÇĞİÖŞÜ& ]+)\s*\((\d{4}[a-z]?)\)', body_text)
             
             results = []
             
-            # 3. ADIM: HER ATIF KAYNAKÇADA VAR MI KONTROL ET
+            # 3. ADIM: KONTROL (Sadece metinde olup kaynakçada olmayana bakıyoruz)
             for author, year in cites_in_body:
-                # Temizlik: "Biggs & Tang" -> "Biggs"
+                # Temizlik: İlk yazarın soyadını al
                 clean_author = author.replace(" et al.", "").replace("&", " ").split()[0].strip()
                 
-                # Kara liste (Atıf olmayan kelimeleri ele)
+                # Tablo ve Şekil atıflarını ele
                 if clean_author.lower() in ["table", "figure", "appendix", "chatgpt", "ai"]:
                     continue
                 
-                # Kaynakça kısmında bu yazarın soyadı ve yılı geçiyor mu?
-                # Case-insensitive (Büyük/Küçük harf duyarsız) arama
+                # Kaynakça bloğunda bu soyadı ve yılı ara
+                # Regex ile esnek arama: İsim ve yıl arasında herhangi bir karakter olabilir
                 found = re.search(rf"{clean_author}.*?{year}", ref_section, re.IGNORECASE)
                 
                 if not found:
                     results.append({
                         "Metindeki Atıf": f"{author.strip()} ({year})",
-                        "Durum": "❌ Kaynakçada Yok",
-                        "Açıklama": "Bu eser metin içinde kullanılmış fakat kaynakça listesinde bulun
+                        "Hata Türü": "❌ Kaynakçada Yok"
+                    })
+
+            # SONUÇLARI GÖSTER
+            if results:
+                df = pd.DataFrame(results).drop_duplicates()
+                st.error(f"⚠️ Toplam {len(df)} kaynak eksik:")
+                st.table(df)
+            else:
+                st.success("✅ Metindeki tüm atıflar kaynakçada bulundu.")
+        else:
+            st.warning("Dosyada 'References' veya 'Kaynakça' başlığı bulunamadı.")
